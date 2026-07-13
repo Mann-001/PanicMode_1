@@ -6,7 +6,6 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { toast } from "@/hooks/use-toast";
 import logo from "@/assets/panicmode-logo.png";
-import { Download } from "lucide-react";
 
 
 const Login = () => {
