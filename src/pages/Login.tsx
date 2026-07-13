@@ -42,7 +42,33 @@ const Login = () => {
     }
   };
 
+  const handleDownloadLogo = async () => {
+    try {
+      const response = await fetch(logo);
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "panicmode-logo.png";
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+      toast({
+        title: "Logo downloaded",
+        description: "panicmode-logo.png saved to your device",
+      });
+    } catch {
+      toast({
+        title: "Download failed",
+        description: "Could not download the logo. Please try again.",
+        variant: "destructive",
+      });
+    }
+  };
+
   return (
+
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-teal-50 via-white to-teal-100 p-4">
       <Card className="w-full max-w-md shadow-lg border-0 bg-white/90 backdrop-blur-sm">
         <CardHeader className="text-center pb-6">
