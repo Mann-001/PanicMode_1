@@ -72,11 +72,31 @@ const Login = () => {
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-teal-50 via-white to-teal-100 p-4">
       <Card className="w-full max-w-md shadow-lg border-0 bg-white/90 backdrop-blur-sm">
         <CardHeader className="text-center pb-6">
-          <CardTitle className="text-3xl font-bold text-teal-600 mb-2">
+          <div className="flex flex-col items-center gap-3">
+            <img
+              src={logo}
+              alt="PanicMode logo"
+              width={80}
+              height={80}
+              className="rounded-2xl"
+            />
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={handleDownloadLogo}
+              className="border-teal-200 text-teal-700 hover:bg-teal-50 hover:text-teal-800 rounded-full"
+            >
+              <Download className="w-4 h-4 mr-2" />
+              Download Icon
+            </Button>
+          </div>
+          <CardTitle className="text-3xl font-bold text-teal-600 mt-4 mb-2">
             PanicMode
           </CardTitle>
           <p className="text-gray-600">Your smart study planner</p>
         </CardHeader>
+
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-6">
             <div className="space-y-2">
