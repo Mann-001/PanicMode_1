@@ -54,16 +54,6 @@ const Login = () => {
               height={80}
               className="rounded-2xl"
             />
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={handleDownloadLogo}
-              className="border-teal-200 text-teal-700 hover:bg-teal-50 hover:text-teal-800 rounded-full"
-            >
-              <Download className="w-4 h-4 mr-2" />
-              Download Icon
-            </Button>
           </div>
           <CardTitle className="text-3xl font-bold text-teal-600 mt-4 mb-2">
             PanicMode
