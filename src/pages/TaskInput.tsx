@@ -34,9 +34,8 @@ const TaskInput = () => {
   const [newTask, setNewTask] = useState({
     title: "",
     deadline: undefined as Date | undefined,
-    priority: "5" as string | number, // Allows string so users can backspace completely
-    totalTime: "",
-    dailyTime: "",
+    priority: "5" as string | number,
+    timeHours: "", // Unified input field for hours
     timeType: "total" as "total" | "daily"
   });
   const [isEditing, setIsEditing] = useState<string | null>(null);
@@ -68,7 +67,7 @@ const TaskInput = () => {
   }, []);
 
   const handleSaveTask = async () => {
-    if (!newTask.title || !newTask.deadline) {
+    if (!newTask.title.trim() || !newTask.deadline) {
       toast({
         title: "Please fill in required fields",
         description: "Task title and deadline are required",
@@ -77,10 +76,11 @@ const TaskInput = () => {
       return;
     }
 
-    const timeValue = newTask.timeType === "total" ? newTask.totalTime : newTask.dailyTime;
-    if (!timeValue || parseFloat(timeValue) <= 0) {
+    const parsedHours = parseFloat(newTask.timeHours);
+    if (isNaN(parsedHours) || parsedHours <= 0) {
       toast({
         title: "Please enter valid time hours",
+        description: "Specify a positive number of hours",
         variant: "destructive",
       });
       return;
@@ -96,12 +96,12 @@ const TaskInput = () => {
 
     const payload = {
       user_id: user.id,
-      title: newTask.title,
+      title: newTask.title.trim(),
       task_type: "auto_scheduled",
       deadline: newTask.deadline.toISOString(),
       priority: finalPriority,
-      total_time: newTask.timeType === "total" ? parseFloat(newTask.totalTime) : null,
-      daily_time: newTask.timeType === "daily" ? parseFloat(newTask.dailyTime) : null,
+      total_time: newTask.timeType === "total" ? parsedHours : null,
+      daily_time: newTask.timeType === "daily" ? parsedHours : null,
     };
 
     if (isEditing) {
@@ -124,7 +124,7 @@ const TaskInput = () => {
       if (error) {
         toast({ title: "Failed to save task", description: error.message, variant: "destructive" });
       } else {
-        toast({ title: "Task saved to Supabase!" });
+        toast({ title: "Task saved!" });
       }
     }
 
@@ -133,8 +133,7 @@ const TaskInput = () => {
       title: "",
       deadline: undefined,
       priority: "5",
-      totalTime: "",
-      dailyTime: "",
+      timeHours: "",
       timeType: "total"
     });
     fetchTasks();
@@ -145,8 +144,7 @@ const TaskInput = () => {
       title: task.title,
       deadline: task.deadline ? new Date(task.deadline) : undefined,
       priority: task.priority?.toString() || "5",
-      totalTime: task.total_time?.toString() || "",
-      dailyTime: task.daily_time?.toString() || "",
+      timeHours: (task.total_time || task.daily_time)?.toString() || "",
       timeType: task.total_time ? "total" : "daily"
     });
     setIsEditing(task.id);
@@ -170,12 +168,12 @@ const TaskInput = () => {
             Manage Your Tasks
           </h1>
           <p className="text-gray-600">
-            Add tasks directly to your Supabase cloud planner
+            Add tasks directly to your study planner
           </p>
         </div>
 
         <div className="grid gap-6 lg:grid-cols-2">
-          {/* Add / Edit Form */}
+          {/* Form */}
           <Card className="shadow-lg border-0 bg-white/90 backdrop-blur-sm">
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-teal-600">
@@ -244,7 +242,7 @@ const TaskInput = () => {
                 </label>
 
                 <div className="flex gap-4">
-                  <label className="flex items-center gap-2 text-sm text-gray-600">
+                  <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
                     <input
                       type="radio"
                       name="timeType"
@@ -254,7 +252,7 @@ const TaskInput = () => {
                     />
                     Total Hours
                   </label>
-                  <label className="flex items-center gap-2 text-sm text-gray-600">
+                  <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
                     <input
                       type="radio"
                       name="timeType"
@@ -270,12 +268,9 @@ const TaskInput = () => {
                   type="number"
                   step="0.5"
                   min="0.5"
-                  placeholder={newTask.timeType === "total" ? "Total study hours" : "Daily hours needed"}
-                  value={newTask.timeType === "total" ? newTask.totalTime : newTask.dailyTime}
-                  onChange={(e) => setNewTask({ 
-                    ...newTask, 
-                    [newTask.timeType === "total" ? "totalTime" : "dailyTime"]: e.target.value 
-                  })}
+                  placeholder={newTask.timeType === "total" ? "Total study hours needed" : "Daily hours needed"}
+                  value={newTask.timeHours}
+                  onChange={(e) => setNewTask({ ...newTask, timeHours: e.target.value })}
                   className="border-teal-200 focus:border-teal-400"
                 />
               </div>
@@ -297,8 +292,7 @@ const TaskInput = () => {
                         title: "",
                         deadline: undefined,
                         priority: "5",
-                        totalTime: "",
-                        dailyTime: "",
+                        timeHours: "",
                         timeType: "total"
                       });
                     }}
@@ -321,7 +315,7 @@ const TaskInput = () => {
             <CardContent>
               {tasks.length === 0 ? (
                 <p className="text-gray-500 text-center py-8">
-                  No tasks saved in your Supabase database yet.
+                  No tasks saved in your database yet.
                 </p>
               ) : (
                 <div className="space-y-3 max-h-80 overflow-y-auto">
@@ -349,7 +343,7 @@ const TaskInput = () => {
                         </div>
                       </div>
                       <div className="text-sm text-gray-600 space-y-0.5">
-                        <p>Type: <span className="font-semibold">{task.task_type}</span></p>
+                        <p>Time: <span className="font-semibold">{task.total_time ? `${task.total_time} hrs Total` : `${task.daily_time} hrs/day`}</span></p>
                         <p>Due: {formatDateSafely(task.deadline || undefined)}</p>
                         <p>Priority: {task.priority ?? "N/A"}</p>
                       </div>
