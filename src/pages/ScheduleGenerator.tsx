@@ -15,13 +15,116 @@ interface ScheduleItem {
   duration: number;
 }
 
+interface RoutineActivity {
+  id: string;
+  name: string;
+  startTime: string; // "HH:MM"
+  endTime: string;   // "HH:MM"
+}
+
 const daysOfWeek = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+const timeToMinutes = (timeStr: string): number => {
+  if (!timeStr) return 0;
+  const [hours, minutes] = timeStr.split(":").map(Number);
+  return hours * 60 + minutes;
+};
+
+const minutesToTime = (minNum: number): string => {
+  const hours = Math.floor(minNum / 60) % 24;
+  const minutes = Math.round(minNum % 60);
+  return `${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}`;
+};
+
+// Check if a time slot [start, end] conflicts with any busy routine interval
+const isSlotConflicting = (start: number, end: number, busyIntervals: [number, number][]): boolean => {
+  return busyIntervals.some(([bStart, bEnd]) => Math.max(start, bStart) < Math.min(end, bEnd));
+};
 
 const ScheduleGenerator = () => {
   const [schedule, setSchedule] = useState<ScheduleItem[]>([]);
   const [userId, setUserId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
+
+  const generateConflictFreeSchedule = (tasks: any[], routines: RoutineActivity[]): ScheduleItem[] => {
+    const generated: ScheduleItem[] = [];
+
+    // Map routine activities to busy minute intervals
+    const busyIntervals: [number, number][] = [];
+    routines.forEach(r => {
+      const s = timeToMinutes(r.startTime);
+      const e = timeToMinutes(r.endTime);
+      if (s < e) {
+        busyIntervals.push([s, e]);
+      } else {
+        // Overnight routines (e.g. 22:00 to 06:00)
+        busyIntervals.push([s, 1440]);
+        busyIntervals.push([0, e]);
+      }
+    });
+
+    // Track occupied slots per day
+    const dayOccupiedSlots: Record<string, [number, number][]> = {};
+    daysOfWeek.forEach(day => {
+      dayOccupiedSlots[day] = [...busyIntervals];
+    });
+
+    tasks.forEach((task, index) => {
+      // Pinned tasks skip auto-scheduling
+      if (task.task_type === "pinned" && task.pinned_datetime) {
+        const pinDate = new Date(task.pinned_datetime);
+        const dayName = daysOfWeek[pinDate.getDay() === 0 ? 6 : pinDate.getDay() - 1];
+        const startMin = pinDate.getHours() * 60 + pinDate.getMinutes();
+        const endMin = startMin + 60; // 1-hr duration for pinned display
+
+        generated.push({
+          id: `${task.id}-pin`,
+          taskId: task.id,
+          taskName: `[Pinned] ${task.title}`,
+          day: dayName,
+          startTime: minutesToTime(startMin),
+          endTime: minutesToTime(endMin),
+          duration: 1
+        });
+        return;
+      }
+
+      // Auto-schedule flexible tasks into non-routine free time
+      const reqHours = Number(task.hours_required || task.daily_time || task.total_time || 2);
+      const durationMin = reqHours * 60;
+      let scheduled = false;
+
+      for (let dayIdx = index % daysOfWeek.length; dayIdx < daysOfWeek.length * 2; dayIdx++) {
+        if (scheduled) break;
+        const currentDay = daysOfWeek[dayIdx % daysOfWeek.length];
+        const occupied = dayOccupiedSlots[currentDay];
+
+        // Search for open free slot between 07:00 (420 min) and 23:00 (1380 min)
+        for (let testStart = 420; testStart + durationMin <= 1380; testStart += 30) {
+          const testEnd = testStart + durationMin;
+          if (!isSlotConflicting(testStart, testEnd, occupied)) {
+            generated.push({
+              id: `${task.id}-auto-${Date.now()}-${index}`,
+              taskId: task.id,
+              taskName: task.title,
+              day: currentDay,
+              startTime: minutesToTime(testStart),
+              endTime: minutesToTime(testEnd),
+              duration: reqHours
+            });
+
+            // Mark slot as occupied for subsequent tasks
+            dayOccupiedSlots[currentDay].push([testStart, testEnd]);
+            scheduled = true;
+            break;
+          }
+        }
+      }
+    });
+
+    return generated;
+  };
 
   const initSchedule = async () => {
     setLoading(true);
@@ -33,7 +136,7 @@ const ScheduleGenerator = () => {
 
     setUserId(user.id);
 
-    // 1. Check Supabase schedules table first
+    // 1. Fetch existing saved schedule from Supabase
     const { data: dbSchedule, error: schedError } = await supabase
       .from("schedules")
       .select("schedule_data")
@@ -46,39 +149,30 @@ const ScheduleGenerator = () => {
       return;
     }
 
-    // 2. Fallback: Generate schedule from Supabase tasks table if schedule doesn't exist
-    const { data: dbTasks, error: taskError } = await supabase
+    // 2. Fetch routines and tasks to generate a smart, non-overlapping schedule
+    const { data: dbRoutines } = await supabase
+      .from("routines")
+      .select("activities")
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    const { data: dbTasks } = await supabase
       .from("tasks")
       .select("*")
       .eq("user_id", user.id);
 
-    if (!taskError && dbTasks && dbTasks.length > 0) {
-      const generated: ScheduleItem[] = [];
+    const routineActivities: RoutineActivity[] = dbRoutines?.activities || [];
+    const userTasks = dbTasks || [];
 
-      dbTasks.forEach((task: any, index: number) => {
-        const day = daysOfWeek[index % daysOfWeek.length];
-        const duration = Number(task.daily_time || task.total_time || 2);
-        const startHour = 9 + (index % 3) * 3;
-
-        generated.push({
-          id: `${task.id}-init-${Date.now()}`,
-          taskId: task.id,
-          taskName: task.title || "Study Session",
-          day,
-          startTime: `${startHour.toString().padStart(2, '0')}:00`,
-          endTime: `${(startHour + duration).toString().padStart(2, '0')}:00`,
-          duration
-        });
-      });
-
+    if (userTasks.length > 0) {
+      const generated = generateConflictFreeSchedule(userTasks, routineActivities);
       setSchedule(generated);
 
-      // Save generated schedule to Supabase schedules table
       await supabase.from("schedules").upsert({
         user_id: user.id,
         schedule_data: generated,
         updated_at: new Date().toISOString()
-      });
+      }, { onConflict: "user_id" });
     }
 
     setLoading(false);
@@ -110,7 +204,7 @@ const ScheduleGenerator = () => {
         <div className="text-center mb-8">
           <h1 className="text-3xl font-bold text-teal-600 mb-2">Your Live Schedule</h1>
           <p className="text-gray-600 mb-4">
-            This timeline reflects all updates synced directly with your Supabase database.
+            Auto-scheduled around your fixed daily routines without conflicts.
           </p>
 
           <div className="flex flex-wrap justify-center gap-3">
@@ -137,7 +231,7 @@ const ScheduleGenerator = () => {
               className="border-teal-300 text-teal-700 hover:bg-teal-50 gap-2"
             >
               <RefreshCw className="h-4 w-4" />
-              Reset & Force Regenerate
+              Reset & Regenerate
             </Button>
 
             <Button
