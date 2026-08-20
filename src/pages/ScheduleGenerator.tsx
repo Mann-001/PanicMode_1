@@ -27,7 +27,7 @@ const daysOfWeek = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Sat
 const timeToMinutes = (timeStr: string): number => {
   if (!timeStr) return 0;
   const [hours, minutes] = timeStr.split(":").map(Number);
-  return hours * 60 + minutes;
+  return hours * 60 + (minutes || 0);
 };
 
 const minutesToTime = (minNum: number): string => {
@@ -67,8 +67,10 @@ const ScheduleGenerator = () => {
     // 1. Build a 24-hour occupancy mask for routine activities
     const routineIntervals: [number, number][] = [];
     routines.forEach((r) => {
-      const intervals = getRoutineIntervals(r.startTime, r.endTime);
-      routineIntervals.push(...intervals);
+      if (r.startTime && r.endTime) {
+        const intervals = getRoutineIntervals(r.startTime, r.endTime);
+        routineIntervals.push(...intervals);
+      }
     });
 
     // 2. Track minute-by-minute occupancy per day (1440 minutes in a day)
@@ -84,7 +86,7 @@ const ScheduleGenerator = () => {
       });
     });
 
-    // 3. Place Pinned Reminders first (pinned tasks override routine slots)
+    // 3. Separate Pinned Reminders vs Auto-Scheduled Tasks
     const autoTasks: any[] = [];
     tasks.forEach((task) => {
       if (task.task_type === "pinned" && task.pinned_datetime) {
@@ -112,52 +114,51 @@ const ScheduleGenerator = () => {
       }
     });
 
-    // 4. Auto-Schedule flexible tasks into FREE time blocks only
+    // 4. Schedule Auto-Scheduled Tasks across open slots
     autoTasks.forEach((task, index) => {
       const reqHours = Number(task.hours_required || task.daily_time || task.total_time || 2);
-      const reqMinutes = Math.round(reqHours * 60);
+      const reqMinutes = Math.max(30, Math.round(reqHours * 60)); // Minimum 30 mins
       let isScheduled = false;
 
-      // Cycle across days starting from task index offset
+      // Try each day starting from an offset based on the task index
       for (let dayOffset = 0; dayOffset < daysOfWeek.length; dayOffset++) {
         if (isScheduled) break;
 
         const currentDay = daysOfWeek[(index + dayOffset) % daysOfWeek.length];
         const occupancy = dayOccupancy[currentDay];
 
-        // Search for a contiguous free block in waking hours (06:00 to 23:00)
-        let consecutiveFree = 0;
-        let candidateStart = -1;
+        // Search waking hours (07:00 to 22:30 -> 420 min to 1350 min)
+        for (let startMin = 420; startMin + reqMinutes <= 1350; startMin += 30) {
+          let hasConflict = false;
 
-        for (let min = 360; min <= 1380; min++) {
-          if (!occupancy[min]) {
-            if (consecutiveFree === 0) candidateStart = min;
-            consecutiveFree++;
-
-            if (consecutiveFree >= reqMinutes) {
-              const candidateEnd = candidateStart + reqMinutes;
-
-              generated.push({
-                id: `${task.id}-auto-${Date.now()}-${index}`,
-                taskId: task.id,
-                taskName: task.title,
-                day: currentDay,
-                startTime: minutesToTime(candidateStart),
-                endTime: minutesToTime(candidateEnd),
-                duration: reqHours
-              });
-
-              // Mark newly scheduled slot as occupied
-              for (let m = candidateStart; m < candidateEnd; m++) {
-                occupancy[m] = true;
-              }
-
-              isScheduled = true;
+          // Check if entire required window is completely free
+          for (let m = startMin; m < startMin + reqMinutes; m++) {
+            if (occupancy[m]) {
+              hasConflict = true;
               break;
             }
-          } else {
-            consecutiveFree = 0;
-            candidateStart = -1;
+          }
+
+          if (!hasConflict) {
+            const endMin = startMin + reqMinutes;
+
+            generated.push({
+              id: `${task.id}-auto-${Date.now()}-${index}`,
+              taskId: task.id,
+              taskName: task.title,
+              day: currentDay,
+              startTime: minutesToTime(startMin),
+              endTime: minutesToTime(endMin),
+              duration: reqHours
+            });
+
+            // Lock this slot for future auto-scheduled tasks
+            for (let m = startMin; m < endMin; m++) {
+              occupancy[m] = true;
+            }
+
+            isScheduled = true;
+            break;
           }
         }
       }
@@ -176,7 +177,20 @@ const ScheduleGenerator = () => {
 
     setUserId(user.id);
 
-    // Fetch live routines and tasks to generate a clean schedule
+    // Fetch existing saved schedule from Supabase
+    const { data: dbSchedule, error: schedError } = await supabase
+      .from("schedules")
+      .select("schedule_data")
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    if (!schedError && dbSchedule && Array.isArray(dbSchedule.schedule_data) && dbSchedule.schedule_data.length > 0) {
+      setSchedule(dbSchedule.schedule_data as ScheduleItem[]);
+      setLoading(false);
+      return;
+    }
+
+    // Generate clean non-overlapping schedule from database tasks + routines
     const { data: dbRoutines } = await supabase
       .from("routines")
       .select("activities")
