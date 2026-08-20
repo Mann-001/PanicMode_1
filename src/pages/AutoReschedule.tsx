@@ -1,4 +1,3 @@
-
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
@@ -16,15 +15,33 @@ interface ScheduleItem {
   duration: number;
 }
 
+const daysOfWeek = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+const parseTime = (timeStr: string): number => {
+  const [hours, minutes] = timeStr.split(':').map(Number);
+  return hours + (minutes || 0) / 60;
+};
+
+const formatTime = (timeNum: number): string => {
+  const hours = Math.floor(timeNum);
+  const minutes = Math.round((timeNum - hours) * 60);
+  const formattedHours = hours.toString().padStart(2, '0');
+  const formattedMinutes = minutes.toString().padStart(2, '0');
+  return `${formattedHours}:${formattedMinutes}`;
+};
+
 const AutoReschedule = () => {
   const [schedule, setSchedule] = useState<ScheduleItem[]>([]);
-  const [selectedSession, setSelectedSession] = useState<string | null>(null);
   const navigate = useNavigate();
 
   useEffect(() => {
     const savedSchedule = localStorage.getItem("panicmode_schedule");
     if (savedSchedule) {
-      setSchedule(JSON.parse(savedSchedule));
+      try {
+        setSchedule(JSON.parse(savedSchedule));
+      } catch (e) {
+        console.error("Failed to parse schedule", e);
+      }
     }
   }, []);
 
@@ -32,44 +49,71 @@ const AutoReschedule = () => {
     const session = schedule.find(s => s.id === sessionId);
     if (!session) return;
 
-    // Remove the missed session
-    const updatedSchedule = schedule.filter(s => s.id !== sessionId);
-    
-    // Try to reschedule to next available slot
-    const remainingDays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-    const currentDayIndex = remainingDays.indexOf(session.day);
-    
-    // Look for next available slot
-    for (let i = currentDayIndex + 1; i < remainingDays.length; i++) {
-      const nextDay = remainingDays[i];
-      const dayHasSessions = updatedSchedule.some(s => s.day === nextDay);
-      
-      if (!dayHasSessions) {
-        // Create rescheduled session
+    // Filter out the missed session
+    const remainingSchedule = schedule.filter(s => s.id !== sessionId);
+    const currentDayIndex = daysOfWeek.indexOf(session.day);
+
+    let rescheduled = false;
+    const updatedSchedule = [...remainingSchedule];
+
+    // Search through current day (later hours) and subsequent days
+    for (let i = currentDayIndex; i < daysOfWeek.length; i++) {
+      const targetDay = daysOfWeek[i];
+      const daySessions = updatedSchedule
+        .filter(s => s.day === targetDay)
+        .sort((a, b) => parseTime(a.startTime) - parseTime(b.startTime));
+
+      // Define study hours boundary (e.g., 08:00 to 22:00)
+      let availableStartTime = i === currentDayIndex ? parseTime(session.endTime) : 9;
+
+      for (const existingSession of daySessions) {
+        const start = parseTime(existingSession.startTime);
+        const end = parseTime(existingSession.endTime);
+
+        if (start - availableStartTime >= session.duration) {
+          // Found a slot before this existing session
+          break;
+        }
+        if (end > availableStartTime) {
+          availableStartTime = end;
+        }
+      }
+
+      // Check if slot fits before end of day (22:00)
+      if (availableStartTime + session.duration <= 22) {
         const rescheduledSession: ScheduleItem = {
           ...session,
           id: `${session.taskId}-rescheduled-${Date.now()}`,
-          day: nextDay,
-          startTime: "19:00", // Evening slot
-          endTime: `${19 + session.duration}:00`
+          day: targetDay,
+          startTime: formatTime(availableStartTime),
+          endTime: formatTime(availableStartTime + session.duration)
         };
-        
+
         updatedSchedule.push(rescheduledSession);
+        rescheduled = true;
         break;
       }
     }
 
-    setSchedule(updatedSchedule);
-    localStorage.setItem("panicmode_schedule", JSON.stringify(updatedSchedule));
-    
-    toast({
-      title: "Session Rescheduled!",
-      description: "Your schedule has been updated to handle the change",
-    });
+    if (rescheduled) {
+      setSchedule(updatedSchedule);
+      localStorage.setItem("panicmode_schedule", JSON.stringify(updatedSchedule));
+      toast({
+        title: "Session Rescheduled!",
+        description: `Moved ${session.taskName} to a new available slot.`,
+      });
+    } else {
+      setSchedule(remainingSchedule);
+      localStorage.setItem("panicmode_schedule", JSON.stringify(remainingSchedule));
+      toast({
+        title: "Session Removed",
+        description: "Could not find a free slot before Sunday 10 PM. Session was unscheduled.",
+        variant: "destructive"
+      });
+    }
   };
 
   const handleMarkUnavailable = (day: string, timeSlot: string) => {
-    // Remove all sessions for that time slot
     const updatedSchedule = schedule.filter(s => 
       !(s.day === day && s.startTime === timeSlot)
     );
@@ -79,7 +123,7 @@ const AutoReschedule = () => {
     
     toast({
       title: "Time marked unavailable",
-      description: "Sessions have been removed from that time slot",
+      description: "Sessions removed from that time slot",
     });
   };
 
@@ -90,8 +134,6 @@ const AutoReschedule = () => {
     acc[session.day].push(session);
     return acc;
   }, {} as Record<string, ScheduleItem[]>);
-
-  const daysOfWeek = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
   if (schedule.length === 0) {
     return (
@@ -192,16 +234,13 @@ const AutoReschedule = () => {
           </Button>
         </div>
 
-        {/* Rescheduling Tips */}
         <Card className="mt-8 shadow-lg border-0 bg-white/90 backdrop-blur-sm">
           <CardHeader>
             <CardTitle className="text-teal-600">💡 Rescheduling Tips</CardTitle>
           </CardHeader>
           <CardContent className="text-sm text-gray-600 space-y-2">
-            <p>• <strong>Missed:</strong> Reschedules the session to the next available evening slot</p>
-            <p>• <strong>Unavailable:</strong> Removes all sessions from that time slot permanently</p>
-            <p>• Sessions are automatically moved to maintain your study goals</p>
-            <p>• Higher priority tasks get rescheduled first</p>
+            <p>• <strong>Missed:</strong> Automatically fits the session into the next available gap in your calendar.</p>
+            <p>• <strong>Unavailable:</strong> Removes sessions from specific time slots.</p>
           </CardContent>
         </Card>
       </div>

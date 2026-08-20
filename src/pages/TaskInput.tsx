@@ -1,4 +1,3 @@
-
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
@@ -7,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Plus, Calendar as CalendarIcon, Edit } from "lucide-react";
-import { format } from "date-fns";
+import { format, isValid } from "date-fns";
 import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 
@@ -19,6 +18,12 @@ interface Task {
   totalTime?: number;
   dailyTime?: number;
 }
+
+const formatDateSafely = (date: Date | string | undefined): string => {
+  if (!date) return "No date set";
+  const parsed = new Date(date);
+  return isValid(parsed) ? format(parsed, "PPP") : "Invalid date";
+};
 
 const TaskInput = () => {
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -34,15 +39,26 @@ const TaskInput = () => {
   const navigate = useNavigate();
 
   useEffect(() => {
-    const savedTasks = localStorage.getItem("panicmode_tasks");
-    if (savedTasks) {
-      const parsedTasks = JSON.parse(savedTasks);
-      // Convert date strings back to Date objects
-      const tasksWithDates = parsedTasks.map((task: any) => ({
-        ...task,
-        deadline: new Date(task.deadline)
-      }));
-      setTasks(tasksWithDates);
+    try {
+      const savedTasks = localStorage.getItem("panicmode_tasks");
+      if (savedTasks) {
+        const parsedTasks = JSON.parse(savedTasks);
+        if (Array.isArray(parsedTasks)) {
+          const tasksWithDates = parsedTasks
+            .map((task: any) => {
+              const dateObj = new Date(task.deadline);
+              return {
+                ...task,
+                deadline: isValid(dateObj) ? dateObj : new Date()
+              };
+            })
+            .filter((task: Task) => task.name && isValid(new Date(task.deadline)));
+          
+          setTasks(tasksWithDates);
+        }
+      }
+    } catch (e) {
+      console.error("Failed to parse saved tasks", e);
     }
   }, []);
 
@@ -52,10 +68,10 @@ const TaskInput = () => {
   };
 
   const handleAddTask = () => {
-    if (!newTask.name || !newTask.deadline) {
+    if (!newTask.name || !newTask.deadline || !isValid(new Date(newTask.deadline))) {
       toast({
         title: "Please fill in required fields",
-        description: "Task name and deadline are required",
+        description: "Task name and a valid deadline are required",
         variant: "destructive",
       });
       return;
@@ -102,9 +118,10 @@ const TaskInput = () => {
   const handleEditTask = (id: string) => {
     const task = tasks.find(t => t.id === id);
     if (task) {
+      const dateObj = new Date(task.deadline);
       setNewTask({
         name: task.name,
-        deadline: task.deadline,
+        deadline: isValid(dateObj) ? dateObj : undefined,
         weightage: task.weightage,
         totalTime: task.totalTime?.toString() || "",
         dailyTime: task.dailyTime?.toString() || "",
@@ -115,7 +132,7 @@ const TaskInput = () => {
   };
 
   const handleUpdateTask = () => {
-    if (!newTask.name || !newTask.deadline) {
+    if (!newTask.name || !newTask.deadline || !isValid(new Date(newTask.deadline))) {
       toast({
         title: "Please fill in required fields",
         variant: "destructive",
@@ -231,7 +248,7 @@ const TaskInput = () => {
                       )}
                     >
                       <CalendarIcon className="mr-2 h-4 w-4" />
-                      {newTask.deadline ? format(newTask.deadline, "PPP") : "Pick a date"}
+                      {formatDateSafely(newTask.deadline)}
                     </Button>
                   </PopoverTrigger>
                   <PopoverContent className="w-auto p-0" align="start">
@@ -376,7 +393,7 @@ const TaskInput = () => {
                         </div>
                       </div>
                       <div className="text-sm text-gray-600 space-y-1">
-                        <p>Due: {format(task.deadline, "PPP")}</p>
+                        <p>Due: {formatDateSafely(task.deadline)}</p>
                         <p>Priority: {task.weightage}/10</p>
                         <p>
                           {task.totalTime 
