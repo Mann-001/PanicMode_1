@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Plus, Calendar as CalendarIcon, Edit, Trash2 } from "lucide-react";
+import { Plus, Calendar as CalendarIcon, Edit, Trash2, Loader2 } from "lucide-react";
 import { format, isValid } from "date-fns";
 import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
@@ -31,19 +31,24 @@ const formatDateSafely = (date: Date | string | undefined): string => {
 const TaskInput = () => {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(false);
+  const [fetching, setFetching] = useState(true);
   const [newTask, setNewTask] = useState({
     title: "",
     deadline: undefined as Date | undefined,
     priority: "5" as string | number,
-    timeHours: "", // Unified input field for hours
+    timeHours: "",
     timeType: "total" as "total" | "daily"
   });
   const [isEditing, setIsEditing] = useState<string | null>(null);
   const navigate = useNavigate();
 
   const fetchTasks = async () => {
+    setFetching(true);
     const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
+    if (!user) {
+      setFetching(false);
+      return;
+    }
 
     const { data, error } = await supabase
       .from("tasks")
@@ -60,6 +65,7 @@ const TaskInput = () => {
     } else if (data) {
       setTasks(data);
     }
+    setFetching(false);
   };
 
   useEffect(() => {
@@ -94,7 +100,7 @@ const TaskInput = () => {
     const parsedPriority = Number(newTask.priority);
     const finalPriority = isNaN(parsedPriority) || parsedPriority < 1 ? 5 : Math.min(10, parsedPriority);
 
-    const payload = {
+    const payload: any = {
       user_id: user.id,
       title: newTask.title.trim(),
       task_type: "auto_scheduled",
@@ -124,7 +130,7 @@ const TaskInput = () => {
       if (error) {
         toast({ title: "Failed to save task", description: error.message, variant: "destructive" });
       } else {
-        toast({ title: "Task saved!" });
+        toast({ title: "Task saved to cloud!" });
       }
     }
 
@@ -313,7 +319,11 @@ const TaskInput = () => {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              {tasks.length === 0 ? (
+              {fetching ? (
+                <div className="flex justify-center py-8">
+                  <Loader2 className="h-6 w-6 animate-spin text-teal-600" />
+                </div>
+              ) : tasks.length === 0 ? (
                 <p className="text-gray-500 text-center py-8">
                   No tasks saved in your database yet.
                 </p>
@@ -343,7 +353,7 @@ const TaskInput = () => {
                         </div>
                       </div>
                       <div className="text-sm text-gray-600 space-y-0.5">
-                        <p>Time: <span className="font-semibold">{task.total_time ? `${task.total_time} hrs Total` : `${task.daily_time} hrs/day`}</span></p>
+                        <p>Time: <span className="font-semibold">{task.total_time ? `${task.total_time} hrs Total` : task.daily_time ? `${task.daily_time} hrs/day` : "N/A"}</span></p>
                         <p>Due: {formatDateSafely(task.deadline || undefined)}</p>
                         <p>Priority: {task.priority ?? "N/A"}</p>
                       </div>
