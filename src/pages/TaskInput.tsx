@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Plus, Calendar as CalendarIcon, Edit, Trash2, Loader2 } from "lucide-react";
+import { Plus, Calendar as CalendarIcon, Edit, Trash2, Pin, Clock, Loader2 } from "lucide-react";
 import { format, isValid } from "date-fns";
 import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
@@ -15,30 +15,37 @@ interface Task {
   id: string;
   user_id: string;
   title: string;
-  task_type: string;
+  task_type: "auto_scheduled" | "pinned";
   deadline?: string | null;
   priority?: number | null;
-  total_time?: number | null;
-  daily_time?: number | null;
+  time_mode?: "total" | "daily" | null;
+  hours_required?: number | null;
+  pinned_datetime?: string | null;
+  notification_offset?: number | null;
 }
 
 const formatDateSafely = (date: Date | string | undefined): string => {
   if (!date) return "No date set";
   const parsed = new Date(date);
-  return isValid(parsed) ? format(parsed, "PPP") : "Invalid date";
+  return isValid(parsed) ? format(parsed, "PPP p") : "Invalid date";
 };
 
 const TaskInput = () => {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(false);
   const [fetching, setFetching] = useState(true);
+  const [taskCategory, setTaskCategory] = useState<"auto_scheduled" | "pinned">("auto_scheduled");
+
   const [newTask, setNewTask] = useState({
     title: "",
     deadline: undefined as Date | undefined,
     priority: "5" as string | number,
-    timeHours: "",
-    timeType: "total" as "total" | "daily"
+    hoursRequired: "",
+    timeMode: "total" as "total" | "daily",
+    pinnedDateTime: "",
+    notificationOffset: 10
   });
+
   const [isEditing, setIsEditing] = useState<string | null>(null);
   const navigate = useNavigate();
 
@@ -73,22 +80,8 @@ const TaskInput = () => {
   }, []);
 
   const handleSaveTask = async () => {
-    if (!newTask.title.trim() || !newTask.deadline) {
-      toast({
-        title: "Please fill in required fields",
-        description: "Task title and deadline are required",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    const parsedHours = parseFloat(newTask.timeHours);
-    if (isNaN(parsedHours) || parsedHours <= 0) {
-      toast({
-        title: "Please enter valid time hours",
-        description: "Specify a positive number of hours",
-        variant: "destructive",
-      });
+    if (!newTask.title.trim()) {
+      toast({ title: "Please enter a task title", variant: "destructive" });
       return;
     }
 
@@ -97,25 +90,49 @@ const TaskInput = () => {
 
     setLoading(true);
 
-    const parsedPriority = Number(newTask.priority);
-    const finalPriority = isNaN(parsedPriority) || parsedPriority < 1 ? 5 : Math.min(10, parsedPriority);
-
-    const payload: any = {
+    let payload: any = {
       user_id: user.id,
       title: newTask.title.trim(),
-      task_type: "auto_scheduled",
-      deadline: newTask.deadline.toISOString(),
-      priority: finalPriority,
-      total_time: newTask.timeType === "total" ? parsedHours : null,
-      daily_time: newTask.timeType === "daily" ? parsedHours : null,
+      task_type: taskCategory,
     };
 
-    if (isEditing) {
-      const { error } = await supabase
-        .from("tasks")
-        .update(payload)
-        .eq("id", isEditing);
+    if (taskCategory === "auto_scheduled") {
+      if (!newTask.deadline) {
+        toast({ title: "Deadline is required for auto-scheduled tasks", variant: "destructive" });
+        setLoading(false);
+        return;
+      }
+      const parsedHours = parseFloat(newTask.hoursRequired);
+      if (isNaN(parsedHours) || parsedHours <= 0) {
+        toast({ title: "Please enter valid required hours", variant: "destructive" });
+        setLoading(false);
+        return;
+      }
 
+      const parsedPriority = Number(newTask.priority);
+      payload.deadline = newTask.deadline.toISOString();
+      payload.priority = isNaN(parsedPriority) ? 5 : Math.min(10, Math.max(1, parsedPriority));
+      payload.time_mode = newTask.timeMode;
+      payload.hours_required = parsedHours;
+      payload.pinned_datetime = null;
+      payload.notification_offset = null;
+    } else {
+      if (!newTask.pinnedDateTime) {
+        toast({ title: "Please select date and time for pinned reminder", variant: "destructive" });
+        setLoading(false);
+        return;
+      }
+
+      payload.pinned_datetime = new Date(newTask.pinnedDateTime).toISOString();
+      payload.notification_offset = newTask.notificationOffset;
+      payload.deadline = null;
+      payload.priority = null;
+      payload.time_mode = null;
+      payload.hours_required = null;
+    }
+
+    if (isEditing) {
+      const { error } = await supabase.from("tasks").update(payload).eq("id", isEditing);
       if (error) {
         toast({ title: "Failed to update task", description: error.message, variant: "destructive" });
       } else {
@@ -123,14 +140,11 @@ const TaskInput = () => {
         setIsEditing(null);
       }
     } else {
-      const { error } = await supabase
-        .from("tasks")
-        .insert([payload]);
-
+      const { error } = await supabase.from("tasks").insert([payload]);
       if (error) {
         toast({ title: "Failed to save task", description: error.message, variant: "destructive" });
       } else {
-        toast({ title: "Task saved to cloud!" });
+        toast({ title: taskCategory === "pinned" ? "Pinned reminder saved!" : "Auto-scheduled task saved!" });
       }
     }
 
@@ -139,19 +153,24 @@ const TaskInput = () => {
       title: "",
       deadline: undefined,
       priority: "5",
-      timeHours: "",
-      timeType: "total"
+      hoursRequired: "",
+      timeMode: "total",
+      pinnedDateTime: "",
+      notificationOffset: 10
     });
     fetchTasks();
   };
 
   const handleEditTask = (task: Task) => {
+    setTaskCategory(task.task_type || "auto_scheduled");
     setNewTask({
       title: task.title,
       deadline: task.deadline ? new Date(task.deadline) : undefined,
       priority: task.priority?.toString() || "5",
-      timeHours: (task.total_time || task.daily_time)?.toString() || "",
-      timeType: task.total_time ? "total" : "daily"
+      hoursRequired: task.hours_required?.toString() || "",
+      timeMode: task.time_mode || "total",
+      pinnedDateTime: task.pinned_datetime ? format(new Date(task.pinned_datetime), "yyyy-MM-dd'T'HH:mm") : "",
+      notificationOffset: task.notification_offset || 10
     });
     setIsEditing(task.id);
   };
@@ -171,15 +190,15 @@ const TaskInput = () => {
       <div className="max-w-6xl mx-auto">
         <div className="text-center mb-8">
           <h1 className="text-3xl font-bold text-teal-600 mb-2">
-            Manage Your Tasks
+            What do you need to get done?
           </h1>
           <p className="text-gray-600">
-            Add tasks directly to your study planner
+            Auto-schedule flexible tasks or pin one-off commitments to fixed times
           </p>
         </div>
 
         <div className="grid gap-6 lg:grid-cols-2">
-          {/* Form */}
+          {/* Add / Edit Form */}
           <Card className="shadow-lg border-0 bg-white/90 backdrop-blur-sm">
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-teal-600">
@@ -188,100 +207,166 @@ const TaskInput = () => {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
+              {/* PRD Question: Auto-schedule or Pin? */}
+              <div>
+                <label className="text-sm font-medium text-gray-700 block mb-2">
+                  Task Type *
+                </label>
+                <div className="grid grid-cols-2 gap-3">
+                  <Button
+                    type="button"
+                    variant={taskCategory === "auto_scheduled" ? "default" : "outline"}
+                    onClick={() => setTaskCategory("auto_scheduled")}
+                    className={cn(
+                      "flex items-center gap-2",
+                      taskCategory === "auto_scheduled" ? "bg-teal-600 hover:bg-teal-700" : "border-teal-200"
+                    )}
+                  >
+                    <Clock className="h-4 w-4" />
+                    Auto-Schedule
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={taskCategory === "pinned" ? "default" : "outline"}
+                    onClick={() => setTaskCategory("pinned")}
+                    className={cn(
+                      "flex items-center gap-2",
+                      taskCategory === "pinned" ? "bg-teal-600 hover:bg-teal-700" : "border-teal-200"
+                    )}
+                  >
+                    <Pin className="h-4 w-4" />
+                    Pinned Reminder
+                  </Button>
+                </div>
+              </div>
+
               <div>
                 <label className="text-sm font-medium text-gray-700 block mb-2">
                   Task Title *
                 </label>
                 <Input
-                  placeholder="e.g., Mathematics Exam Prep"
+                  placeholder={taskCategory === "pinned" ? "e.g., Take medicine, Call advisor" : "e.g., Math Exam Prep"}
                   value={newTask.title}
                   onChange={(e) => setNewTask({ ...newTask, title: e.target.value })}
                   className="border-teal-200 focus:border-teal-400"
                 />
               </div>
 
-              <div>
-                <label className="text-sm font-medium text-gray-700 block mb-2">
-                  Deadline *
-                </label>
-                <Popover>
-                  <PopoverTrigger asChild>
-                    <Button
-                      variant="outline"
-                      className={cn(
-                        "w-full justify-start text-left font-normal border-teal-200",
-                        !newTask.deadline && "text-muted-foreground"
-                      )}
+              {taskCategory === "auto_scheduled" ? (
+                <>
+                  <div>
+                    <label className="text-sm font-medium text-gray-700 block mb-2">
+                      Deadline *
+                    </label>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button
+                          variant="outline"
+                          className={cn(
+                            "w-full justify-start text-left font-normal border-teal-200",
+                            !newTask.deadline && "text-muted-foreground"
+                          )}
+                        >
+                          <CalendarIcon className="mr-2 h-4 w-4" />
+                          {formatDateSafely(newTask.deadline)}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-auto p-0" align="start">
+                        <Calendar
+                          mode="single"
+                          selected={newTask.deadline}
+                          onSelect={(date) => setNewTask({ ...newTask, deadline: date })}
+                          initialFocus
+                        />
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+
+                  <div>
+                    <label className="text-sm font-medium text-gray-700 block mb-2">
+                      Priority (1-10)
+                    </label>
+                    <Input
+                      type="number"
+                      min="1"
+                      max="10"
+                      value={newTask.priority}
+                      onChange={(e) => setNewTask({ ...newTask, priority: e.target.value })}
+                      className="border-teal-200 focus:border-teal-400"
+                    />
+                  </div>
+
+                  <div className="space-y-3">
+                    <label className="text-sm font-medium text-gray-700 block">
+                      Time Requirement *
+                    </label>
+
+                    <div className="flex gap-4">
+                      <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="timeMode"
+                          checked={newTask.timeMode === "total"}
+                          onChange={() => setNewTask({ ...newTask, timeMode: "total" })}
+                          className="accent-teal-500"
+                        />
+                        Total Hours
+                      </label>
+                      <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="timeMode"
+                          checked={newTask.timeMode === "daily"}
+                          onChange={() => setNewTask({ ...newTask, timeMode: "daily" })}
+                          className="accent-teal-500"
+                        />
+                        Daily Hours
+                      </label>
+                    </div>
+
+                    <Input
+                      type="number"
+                      step="0.5"
+                      min="0.5"
+                      placeholder={newTask.timeMode === "total" ? "Total study hours needed" : "Daily hours needed"}
+                      value={newTask.hoursRequired}
+                      onChange={(e) => setNewTask({ ...newTask, hoursRequired: e.target.value })}
+                      className="border-teal-200 focus:border-teal-400"
+                    />
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div>
+                    <label className="text-sm font-medium text-gray-700 block mb-2">
+                      Exact Date & Time *
+                    </label>
+                    <Input
+                      type="datetime-local"
+                      value={newTask.pinnedDateTime}
+                      onChange={(e) => setNewTask({ ...newTask, pinnedDateTime: e.target.value })}
+                      className="border-teal-200 focus:border-teal-400"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-sm font-medium text-gray-700 block mb-2">
+                      Notification Offset
+                    </label>
+                    <select
+                      value={newTask.notificationOffset}
+                      onChange={(e) => setNewTask({ ...newTask, notificationOffset: Number(e.target.value) })}
+                      className="w-full h-10 px-3 rounded-md border border-teal-200 bg-background text-sm focus:outline-none focus:ring-2 focus:ring-teal-400"
                     >
-                      <CalendarIcon className="mr-2 h-4 w-4" />
-                      {formatDateSafely(newTask.deadline)}
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-auto p-0" align="start">
-                    <Calendar
-                      mode="single"
-                      selected={newTask.deadline}
-                      onSelect={(date) => setNewTask({ ...newTask, deadline: date })}
-                      initialFocus
-                    />
-                  </PopoverContent>
-                </Popover>
-              </div>
+                      <option value={0}>At time of event</option>
+                      <option value={10}>10 minutes before</option>
+                      <option value={30}>30 minutes before</option>
+                    </select>
+                  </div>
+                </>
+              )}
 
-              <div>
-                <label className="text-sm font-medium text-gray-700 block mb-2">
-                  Priority (1-10)
-                </label>
-                <Input
-                  type="number"
-                  min="1"
-                  max="10"
-                  value={newTask.priority}
-                  onChange={(e) => setNewTask({ ...newTask, priority: e.target.value })}
-                  className="border-teal-200 focus:border-teal-400"
-                />
-              </div>
-
-              <div className="space-y-3">
-                <label className="text-sm font-medium text-gray-700 block">
-                  Time Requirement *
-                </label>
-
-                <div className="flex gap-4">
-                  <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="timeType"
-                      checked={newTask.timeType === "total"}
-                      onChange={() => setNewTask({ ...newTask, timeType: "total" })}
-                      className="accent-teal-500"
-                    />
-                    Total Hours
-                  </label>
-                  <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="timeType"
-                      checked={newTask.timeType === "daily"}
-                      onChange={() => setNewTask({ ...newTask, timeType: "daily" })}
-                      className="accent-teal-500"
-                    />
-                    Daily Hours
-                  </label>
-                </div>
-
-                <Input
-                  type="number"
-                  step="0.5"
-                  min="0.5"
-                  placeholder={newTask.timeType === "total" ? "Total study hours needed" : "Daily hours needed"}
-                  value={newTask.timeHours}
-                  onChange={(e) => setNewTask({ ...newTask, timeHours: e.target.value })}
-                  className="border-teal-200 focus:border-teal-400"
-                />
-              </div>
-
-              <div className="flex gap-2">
+              <div className="flex gap-2 pt-2">
                 <Button 
                   onClick={handleSaveTask}
                   disabled={loading}
@@ -298,8 +383,10 @@ const TaskInput = () => {
                         title: "",
                         deadline: undefined,
                         priority: "5",
-                        timeHours: "",
-                        timeType: "total"
+                        hoursRequired: "",
+                        timeMode: "total",
+                        pinnedDateTime: "",
+                        notificationOffset: 10
                       });
                     }}
                   >
@@ -310,12 +397,12 @@ const TaskInput = () => {
             </CardContent>
           </Card>
 
-          {/* Tasks List */}
+          {/* Task List */}
           <Card className="shadow-lg border-0 bg-white/90 backdrop-blur-sm">
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-teal-600">
                 <CalendarIcon className="h-5 w-5" />
-                Cloud Tasks ({tasks.length})
+                Your Tasks ({tasks.length})
               </CardTitle>
             </CardHeader>
             <CardContent>
@@ -328,11 +415,23 @@ const TaskInput = () => {
                   No tasks saved in your database yet.
                 </p>
               ) : (
-                <div className="space-y-3 max-h-80 overflow-y-auto">
+                <div className="space-y-3 max-h-[420px] overflow-y-auto">
                   {tasks.map((task) => (
                     <div key={task.id} className="p-4 bg-teal-50 rounded-lg border border-teal-100">
                       <div className="flex items-start justify-between mb-1">
-                        <h4 className="font-medium text-gray-800">{task.title}</h4>
+                        <div className="flex items-center gap-2">
+                          {task.task_type === "pinned" ? (
+                            <span className="px-2 py-0.5 text-xs font-semibold bg-purple-100 text-purple-700 rounded flex items-center gap-1">
+                              <Pin className="h-3 w-3" /> Pinned
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 text-xs font-semibold bg-teal-100 text-teal-700 rounded flex items-center gap-1">
+                              <Clock className="h-3 w-3" /> Auto
+                            </span>
+                          )}
+                          <h4 className="font-medium text-gray-800">{task.title}</h4>
+                        </div>
+
                         <div className="flex gap-1">
                           <Button
                             size="sm"
@@ -352,10 +451,20 @@ const TaskInput = () => {
                           </Button>
                         </div>
                       </div>
-                      <div className="text-sm text-gray-600 space-y-0.5">
-                        <p>Time: <span className="font-semibold">{task.total_time ? `${task.total_time} hrs Total` : task.daily_time ? `${task.daily_time} hrs/day` : "N/A"}</span></p>
-                        <p>Due: {formatDateSafely(task.deadline || undefined)}</p>
-                        <p>Priority: {task.priority ?? "N/A"}</p>
+
+                      <div className="text-sm text-gray-600 space-y-0.5 mt-2">
+                        {task.task_type === "pinned" ? (
+                          <>
+                            <p>Pinned Time: <span className="font-semibold">{formatDateSafely(task.pinned_datetime || undefined)}</span></p>
+                            <p>Notify: <span className="font-semibold">{task.notification_offset === 0 ? "At event" : `${task.notification_offset} mins before`}</span></p>
+                          </>
+                        ) : (
+                          <>
+                            <p>Time Required: <span className="font-semibold">{task.hours_required} hrs ({task.time_mode})</span></p>
+                            <p>Due: {formatDateSafely(task.deadline || undefined)}</p>
+                            <p>Priority: {task.priority ?? "N/A"}/10</p>
+                          </>
+                        )}
                       </div>
                     </div>
                   ))}
