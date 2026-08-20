@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from "react";
-import type { User } from "@supabase/supabase-js";
+import type { User } from "@supabase/supabase-js"; // Correct (added @)
 import { supabase } from "../lib/supabaseClient";
 import { posthog } from "../lib/posthogClient";
 
