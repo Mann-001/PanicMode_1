@@ -36,9 +36,20 @@ const minutesToTime = (minNum: number): string => {
   return `${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}`;
 };
 
-// Check if a time slot [start, end] conflicts with any busy routine interval
-const isSlotConflicting = (start: number, end: number, busyIntervals: [number, number][]): boolean => {
-  return busyIntervals.some(([bStart, bEnd]) => Math.max(start, bStart) < Math.min(end, bEnd));
+// Return routine intervals in minutes. Handles overnight ranges like 22:00 -> 06:00
+const getRoutineIntervals = (startTime: string, endTime: string): [number, number][] => {
+  const start = timeToMinutes(startTime);
+  const end = timeToMinutes(endTime);
+
+  if (start < end) {
+    return [[start, end]];
+  } else {
+    // Overnight activity: splits into [start -> 1440] and [0 -> end]
+    return [
+      [start, 24 * 60],
+      [0, end]
+    ];
+  }
 };
 
 const ScheduleGenerator = () => {
@@ -47,36 +58,40 @@ const ScheduleGenerator = () => {
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
 
-  const generateConflictFreeSchedule = (tasks: any[], routines: RoutineActivity[]): ScheduleItem[] => {
+  const generateStrictNonOverlappingSchedule = (
+    tasks: any[],
+    routines: RoutineActivity[]
+  ): ScheduleItem[] => {
     const generated: ScheduleItem[] = [];
 
-    // Map routine activities to busy minute intervals
-    const busyIntervals: [number, number][] = [];
-    routines.forEach(r => {
-      const s = timeToMinutes(r.startTime);
-      const e = timeToMinutes(r.endTime);
-      if (s < e) {
-        busyIntervals.push([s, e]);
-      } else {
-        // Overnight routines (e.g. 22:00 to 06:00)
-        busyIntervals.push([s, 1440]);
-        busyIntervals.push([0, e]);
-      }
+    // 1. Build a 24-hour occupancy mask for routine activities
+    const routineIntervals: [number, number][] = [];
+    routines.forEach((r) => {
+      const intervals = getRoutineIntervals(r.startTime, r.endTime);
+      routineIntervals.push(...intervals);
     });
 
-    // Track occupied slots per day
-    const dayOccupiedSlots: Record<string, [number, number][]> = {};
-    daysOfWeek.forEach(day => {
-      dayOccupiedSlots[day] = [...busyIntervals];
+    // 2. Track minute-by-minute occupancy per day (1440 minutes in a day)
+    const dayOccupancy: Record<string, boolean[]> = {};
+    daysOfWeek.forEach((day) => {
+      dayOccupancy[day] = new Array(1440).fill(false);
+
+      // Fill routine blocked slots
+      routineIntervals.forEach(([startMin, endMin]) => {
+        for (let m = startMin; m < endMin; m++) {
+          if (m < 1440) dayOccupancy[day][m] = true;
+        }
+      });
     });
 
-    tasks.forEach((task, index) => {
-      // Pinned tasks skip auto-scheduling
+    // 3. Place Pinned Reminders first (pinned tasks override routine slots)
+    const autoTasks: any[] = [];
+    tasks.forEach((task) => {
       if (task.task_type === "pinned" && task.pinned_datetime) {
         const pinDate = new Date(task.pinned_datetime);
         const dayName = daysOfWeek[pinDate.getDay() === 0 ? 6 : pinDate.getDay() - 1];
         const startMin = pinDate.getHours() * 60 + pinDate.getMinutes();
-        const endMin = startMin + 60; // 1-hr duration for pinned display
+        const endMin = Math.min(1440, startMin + 60);
 
         generated.push({
           id: `${task.id}-pin`,
@@ -87,37 +102,62 @@ const ScheduleGenerator = () => {
           endTime: minutesToTime(endMin),
           duration: 1
         });
-        return;
+
+        // Mark pinned time as occupied
+        for (let m = startMin; m < endMin; m++) {
+          dayOccupancy[dayName][m] = true;
+        }
+      } else {
+        autoTasks.push(task);
       }
+    });
 
-      // Auto-schedule flexible tasks into non-routine free time
+    // 4. Auto-Schedule flexible tasks into FREE time blocks only
+    autoTasks.forEach((task, index) => {
       const reqHours = Number(task.hours_required || task.daily_time || task.total_time || 2);
-      const durationMin = reqHours * 60;
-      let scheduled = false;
+      const reqMinutes = Math.round(reqHours * 60);
+      let isScheduled = false;
 
-      for (let dayIdx = index % daysOfWeek.length; dayIdx < daysOfWeek.length * 2; dayIdx++) {
-        if (scheduled) break;
-        const currentDay = daysOfWeek[dayIdx % daysOfWeek.length];
-        const occupied = dayOccupiedSlots[currentDay];
+      // Cycle across days starting from task index offset
+      for (let dayOffset = 0; dayOffset < daysOfWeek.length; dayOffset++) {
+        if (isScheduled) break;
 
-        // Search for open free slot between 07:00 (420 min) and 23:00 (1380 min)
-        for (let testStart = 420; testStart + durationMin <= 1380; testStart += 30) {
-          const testEnd = testStart + durationMin;
-          if (!isSlotConflicting(testStart, testEnd, occupied)) {
-            generated.push({
-              id: `${task.id}-auto-${Date.now()}-${index}`,
-              taskId: task.id,
-              taskName: task.title,
-              day: currentDay,
-              startTime: minutesToTime(testStart),
-              endTime: minutesToTime(testEnd),
-              duration: reqHours
-            });
+        const currentDay = daysOfWeek[(index + dayOffset) % daysOfWeek.length];
+        const occupancy = dayOccupancy[currentDay];
 
-            // Mark slot as occupied for subsequent tasks
-            dayOccupiedSlots[currentDay].push([testStart, testEnd]);
-            scheduled = true;
-            break;
+        // Search for a contiguous free block in waking hours (06:00 to 23:00)
+        let consecutiveFree = 0;
+        let candidateStart = -1;
+
+        for (let min = 360; min <= 1380; min++) {
+          if (!occupancy[min]) {
+            if (consecutiveFree === 0) candidateStart = min;
+            consecutiveFree++;
+
+            if (consecutiveFree >= reqMinutes) {
+              const candidateEnd = candidateStart + reqMinutes;
+
+              generated.push({
+                id: `${task.id}-auto-${Date.now()}-${index}`,
+                taskId: task.id,
+                taskName: task.title,
+                day: currentDay,
+                startTime: minutesToTime(candidateStart),
+                endTime: minutesToTime(candidateEnd),
+                duration: reqHours
+              });
+
+              // Mark newly scheduled slot as occupied
+              for (let m = candidateStart; m < candidateEnd; m++) {
+                occupancy[m] = true;
+              }
+
+              isScheduled = true;
+              break;
+            }
+          } else {
+            consecutiveFree = 0;
+            candidateStart = -1;
           }
         }
       }
@@ -136,20 +176,7 @@ const ScheduleGenerator = () => {
 
     setUserId(user.id);
 
-    // 1. Fetch existing saved schedule from Supabase
-    const { data: dbSchedule, error: schedError } = await supabase
-      .from("schedules")
-      .select("schedule_data")
-      .eq("user_id", user.id)
-      .maybeSingle();
-
-    if (!schedError && dbSchedule && Array.isArray(dbSchedule.schedule_data) && dbSchedule.schedule_data.length > 0) {
-      setSchedule(dbSchedule.schedule_data as ScheduleItem[]);
-      setLoading(false);
-      return;
-    }
-
-    // 2. Fetch routines and tasks to generate a smart, non-overlapping schedule
+    // Fetch live routines and tasks to generate a clean schedule
     const { data: dbRoutines } = await supabase
       .from("routines")
       .select("activities")
@@ -165,7 +192,7 @@ const ScheduleGenerator = () => {
     const userTasks = dbTasks || [];
 
     if (userTasks.length > 0) {
-      const generated = generateConflictFreeSchedule(userTasks, routineActivities);
+      const generated = generateStrictNonOverlappingSchedule(userTasks, routineActivities);
       setSchedule(generated);
 
       await supabase.from("schedules").upsert({
@@ -173,6 +200,8 @@ const ScheduleGenerator = () => {
         schedule_data: generated,
         updated_at: new Date().toISOString()
       }, { onConflict: "user_id" });
+    } else {
+      setSchedule([]);
     }
 
     setLoading(false);
@@ -204,7 +233,7 @@ const ScheduleGenerator = () => {
         <div className="text-center mb-8">
           <h1 className="text-3xl font-bold text-teal-600 mb-2">Your Live Schedule</h1>
           <p className="text-gray-600 mb-4">
-            Auto-scheduled around your fixed daily routines without conflicts.
+            Auto-scheduled strictly into free time slots around your daily routines.
           </p>
 
           <div className="flex flex-wrap justify-center gap-3">
@@ -214,7 +243,7 @@ const ScheduleGenerator = () => {
               className="border-teal-300 text-teal-700 hover:bg-teal-50 gap-2"
             >
               <Home className="h-4 w-4" />
-              Return to Home
+              Return to Routine
             </Button>
 
             <Button
@@ -222,7 +251,7 @@ const ScheduleGenerator = () => {
               className="bg-teal-600 hover:bg-teal-700 text-white gap-2"
             >
               <PlusCircle className="h-4 w-4" />
-              Add New Tasks
+              Add / Manage Tasks
             </Button>
 
             <Button
@@ -263,7 +292,7 @@ const ScheduleGenerator = () => {
                   </CardHeader>
                   <CardContent className="space-y-3">
                     {daySessions.length === 0 ? (
-                      <p className="text-gray-400 text-sm py-4">No sessions scheduled</p>
+                      <p className="text-gray-400 text-sm py-4">No study sessions scheduled</p>
                     ) : (
                       daySessions.map(session => (
                         <div key={session.id} className="p-3 bg-teal-50 rounded-lg border border-teal-200">
