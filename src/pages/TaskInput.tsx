@@ -34,7 +34,7 @@ const TaskInput = () => {
   const [newTask, setNewTask] = useState({
     title: "",
     deadline: undefined as Date | undefined,
-    priority: 5,
+    priority: "5" as string | number, // Allows string so users can backspace completely
     totalTime: "",
     dailyTime: "",
     timeType: "total" as "total" | "daily"
@@ -42,7 +42,6 @@ const TaskInput = () => {
   const [isEditing, setIsEditing] = useState<string | null>(null);
   const navigate = useNavigate();
 
-  // Load tasks from Supabase DB
   const fetchTasks = async () => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
@@ -92,12 +91,15 @@ const TaskInput = () => {
 
     setLoading(true);
 
+    const parsedPriority = Number(newTask.priority);
+    const finalPriority = isNaN(parsedPriority) || parsedPriority < 1 ? 5 : Math.min(10, parsedPriority);
+
     const payload = {
       user_id: user.id,
       title: newTask.title,
       task_type: "auto_scheduled",
       deadline: newTask.deadline.toISOString(),
-      priority: newTask.priority,
+      priority: finalPriority,
       total_time: newTask.timeType === "total" ? parseFloat(newTask.totalTime) : null,
       daily_time: newTask.timeType === "daily" ? parseFloat(newTask.dailyTime) : null,
     };
@@ -130,7 +132,7 @@ const TaskInput = () => {
     setNewTask({
       title: "",
       deadline: undefined,
-      priority: 5,
+      priority: "5",
       totalTime: "",
       dailyTime: "",
       timeType: "total"
@@ -142,7 +144,7 @@ const TaskInput = () => {
     setNewTask({
       title: task.title,
       deadline: task.deadline ? new Date(task.deadline) : undefined,
-      priority: task.priority || 5,
+      priority: task.priority?.toString() || "5",
       totalTime: task.total_time?.toString() || "",
       dailyTime: task.daily_time?.toString() || "",
       timeType: task.total_time ? "total" : "daily"
@@ -231,7 +233,7 @@ const TaskInput = () => {
                   min="1"
                   max="10"
                   value={newTask.priority}
-                  onChange={(e) => setNewTask({ ...newTask, priority: parseInt(e.target.value) || 5 })}
+                  onChange={(e) => setNewTask({ ...newTask, priority: e.target.value })}
                   className="border-teal-200 focus:border-teal-400"
                 />
               </div>
@@ -294,7 +296,7 @@ const TaskInput = () => {
                       setNewTask({
                         title: "",
                         deadline: undefined,
-                        priority: 5,
+                        priority: "5",
                         totalTime: "",
                         dailyTime: "",
                         timeType: "total"
@@ -308,7 +310,7 @@ const TaskInput = () => {
             </CardContent>
           </Card>
 
-          {/* Database Tasks List */}
+          {/* Tasks List */}
           <Card className="shadow-lg border-0 bg-white/90 backdrop-blur-sm">
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-teal-600">

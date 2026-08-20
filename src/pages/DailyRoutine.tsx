@@ -10,9 +10,30 @@ import { supabase } from "@/lib/supabaseClient";
 interface RoutineActivity {
   id: string;
   name: string;
-  startTime: string;
-  endTime: string;
+  startTime: string; // HH:MM format
+  endTime: string;   // HH:MM format
 }
+
+// Convert "HH:MM" to total minutes for collision comparison
+const timeToMinutes = (timeStr: string): number => {
+  const [hours, minutes] = timeStr.split(":").map(Number);
+  return hours * 60 + minutes;
+};
+
+// Check if two time ranges overlap
+const isOverlapping = (
+  start1: string,
+  end1: string,
+  start2: string,
+  end2: string
+): boolean => {
+  const s1 = timeToMinutes(start1);
+  const e1 = timeToMinutes(end1);
+  const s2 = timeToMinutes(start2);
+  const e2 = timeToMinutes(end2);
+
+  return Math.max(s1, s2) < Math.min(e1, e2);
+};
 
 const DailyRoutine = () => {
   const [activities, setActivities] = useState<RoutineActivity[]>([]);
@@ -21,8 +42,8 @@ const DailyRoutine = () => {
   const [saving, setSaving] = useState(false);
   const [newActivity, setNewActivity] = useState({
     name: "",
-    startTime: "",
-    endTime: ""
+    startTime: "09:00",
+    endTime: "10:00",
   });
   const [isEditing, setIsEditing] = useState<string | null>(null);
   const navigate = useNavigate();
@@ -34,7 +55,6 @@ const DailyRoutine = () => {
       if (user) {
         setUserId(user.id);
         
-        // Fetch routine JSONB from Supabase
         const { data, error } = await supabase
           .from("routines")
           .select("activities")
@@ -59,7 +79,6 @@ const DailyRoutine = () => {
     setSaving(true);
     setActivities(updatedActivities);
 
-    // Upsert into routines table using user_id conflict key
     const { error } = await supabase
       .from("routines")
       .upsert({
@@ -79,27 +98,55 @@ const DailyRoutine = () => {
     }
   };
 
-  const handleAddActivity = () => {
-    if (!newActivity.name || !newActivity.startTime || !newActivity.endTime) {
+  const validateAndCheckOverlap = (): boolean => {
+    if (!newActivity.name.trim() || !newActivity.startTime || !newActivity.endTime) {
       toast({ title: "Please fill in all fields", variant: "destructive" });
-      return;
+      return false;
     }
 
     if (newActivity.startTime >= newActivity.endTime) {
       toast({ title: "End time must be after start time", variant: "destructive" });
-      return;
+      return false;
     }
+
+    // Check for overlap against all activities except the one currently being edited
+    const hasOverlap = activities.some((item) => {
+      if (isEditing && item.id === isEditing) return false;
+      return isOverlapping(
+        newActivity.startTime,
+        newActivity.endTime,
+        item.startTime,
+        item.endTime
+      );
+    });
+
+    if (hasOverlap) {
+      toast({
+        title: "Time Slot Conflict!",
+        description: "This activity overlaps with an existing activity in your routine.",
+        variant: "destructive",
+      });
+      return false;
+    }
+
+    return true;
+  };
+
+  const handleAddActivity = () => {
+    if (!validateAndCheckOverlap()) return;
 
     const activity: RoutineActivity = {
       id: Date.now().toString(),
-      ...newActivity
+      name: newActivity.name.trim(),
+      startTime: newActivity.startTime,
+      endTime: newActivity.endTime,
     };
 
     const updated = [...activities, activity];
     saveRoutineToSupabase(updated);
-    setNewActivity({ name: "", startTime: "", endTime: "" });
+    setNewActivity({ name: "", startTime: "09:00", endTime: "10:00" });
 
-    toast({ title: "Activity added!" });
+    toast({ title: "Activity added successfully!" });
   };
 
   const handleEditActivity = (id: string) => {
@@ -111,17 +158,14 @@ const DailyRoutine = () => {
   };
 
   const handleUpdateActivity = () => {
-    if (!newActivity.name || !newActivity.startTime || !newActivity.endTime) {
-      toast({ title: "Please fill in all fields", variant: "destructive" });
-      return;
-    }
+    if (!validateAndCheckOverlap()) return;
 
     const updated = activities.map(a =>
       a.id === isEditing ? { ...a, ...newActivity } : a
     );
 
     saveRoutineToSupabase(updated);
-    setNewActivity({ name: "", startTime: "", endTime: "" });
+    setNewActivity({ name: "", startTime: "09:00", endTime: "10:00" });
     setIsEditing(null);
 
     toast({ title: "Activity updated!" });
@@ -141,7 +185,7 @@ const DailyRoutine = () => {
             Tell us about your daily routine
           </h1>
           <p className="text-gray-600">
-            Add your fixed activities so we can find the best study times
+            Add fixed non-overlapping activities so we can optimize your study schedule
           </p>
         </div>
 
@@ -151,7 +195,7 @@ const DailyRoutine = () => {
           </div>
         ) : (
           <div className="grid gap-6 md:grid-cols-2">
-            {/* Add Activity Form */}
+            {/* Form */}
             <Card className="shadow-lg border-0 bg-white/90 backdrop-blur-sm">
               <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-teal-600">
@@ -165,7 +209,7 @@ const DailyRoutine = () => {
                     Activity Name
                   </label>
                   <Input
-                    placeholder="e.g., Sleep, Breakfast, Gym"
+                    placeholder="e.g., Lunch, Gym, Class"
                     value={newActivity.name}
                     onChange={(e) => setNewActivity({ ...newActivity, name: e.target.value })}
                     className="border-teal-200 focus:border-teal-400"
@@ -204,14 +248,14 @@ const DailyRoutine = () => {
                     disabled={saving}
                     className="flex-1 bg-teal-500 hover:bg-teal-600"
                   >
-                    {saving ? "Syncing..." : isEditing ? "Update Activity" : "Add Activity"}
+                    {saving ? "Saving..." : isEditing ? "Update Activity" : "Add Activity"}
                   </Button>
                   {isEditing && (
                     <Button 
                       variant="outline"
                       onClick={() => {
                         setIsEditing(null);
-                        setNewActivity({ name: "", startTime: "", endTime: "" });
+                        setNewActivity({ name: "", startTime: "09:00", endTime: "10:00" });
                       }}
                     >
                       Cancel
@@ -221,7 +265,7 @@ const DailyRoutine = () => {
               </CardContent>
             </Card>
 
-            {/* Activities List */}
+            {/* Routine List */}
             <Card className="shadow-lg border-0 bg-white/90 backdrop-blur-sm">
               <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-teal-600">
@@ -232,7 +276,7 @@ const DailyRoutine = () => {
               <CardContent>
                 {activities.length === 0 ? (
                   <p className="text-gray-500 text-center py-8">
-                    No activities added yet. Start by adding your daily routine!
+                    No activities added yet.
                   </p>
                 ) : (
                   <div className="space-y-3 max-h-80 overflow-y-auto">
@@ -277,7 +321,7 @@ const DailyRoutine = () => {
         <div className="text-center mt-8">
           <Button 
             onClick={() => navigate("/tasks")}
-            className="bg-teal-500 hover:bg-teal-600 text-white px-8 py-3 text-lg rounded-xl shadow-lg hover:shadow-xl transition-all"
+            className="bg-teal-500 hover:bg-teal-600 text-white px-8 py-3 text-lg rounded-xl shadow-lg transition-all"
           >
             Continue to Tasks
           </Button>
