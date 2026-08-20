@@ -43,7 +43,7 @@ const getRoutineIntervals = (startTime: string, endTime: string): [number, numbe
   if (start < end) {
     return [[start, end]];
   } else {
-    // Overnight routines (e.g., 22:00 -> 06:00)
+    // Overnight routines (e.g. 22:00 -> 06:00)
     return [
       [start, 24 * 60],
       [0, end]
@@ -57,28 +57,30 @@ const ScheduleGenerator = () => {
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
 
-  const generateFullSchedule = (tasks: any[], routines: RoutineActivity[]): ScheduleItem[] => {
+  const generateCompleteSchedule = (tasks: any[], routines: RoutineActivity[]): ScheduleItem[] => {
     const generated: ScheduleItem[] = [];
 
-    // 1. Build routine occupancy map (1440 mins/day)
-    const routineIntervals: [number, number][] = [];
-    routines.forEach((r) => {
-      if (r.startTime && r.endTime) {
-        routineIntervals.push(...getRoutineIntervals(r.startTime, r.endTime));
-      }
-    });
-
+    // 1. Build minute-by-minute occupancy map for each day (1440 mins/day)
     const dayOccupancy: Record<string, boolean[]> = {};
     daysOfWeek.forEach((day) => {
       dayOccupancy[day] = new Array(1440).fill(false);
-      routineIntervals.forEach(([startMin, endMin]) => {
-        for (let m = startMin; m < endMin; m++) {
-          if (m < 1440) dayOccupancy[day][m] = true;
-        }
-      });
     });
 
-    // 2. Place Pinned Reminders
+    // Mark routines as occupied slots
+    routines.forEach((r) => {
+      if (r.startTime && r.endTime) {
+        const intervals = getRoutineIntervals(r.startTime, r.endTime);
+        daysOfWeek.forEach((day) => {
+          intervals.forEach(([startMin, endMin]) => {
+            for (let m = startMin; m < endMin; m++) {
+              if (m < 1440) dayOccupancy[day][m] = true;
+            }
+          });
+        });
+      }
+    });
+
+    // 2. Place Pinned Reminders first
     const autoTasks: any[] = [];
     tasks.forEach((task) => {
       if (task.task_type === "pinned" && task.pinned_datetime) {
@@ -105,11 +107,10 @@ const ScheduleGenerator = () => {
       }
     });
 
-    // 3. Helper to find free slot on a specific day
-    const tryScheduleSlot = (day: string, durationMinutes: number): { start: number; end: number } | null => {
+    // 3. Helper to find open continuous free slots on a specific day between 07:00 (420 min) and 23:00 (1380 min)
+    const findFreeSlot = (day: string, durationMinutes: number): { start: number; end: number } | null => {
       const occupancy = dayOccupancy[day];
-      // Search standard waking study window: 08:00 (480 min) to 22:00 (1320 min)
-      for (let startMin = 480; startMin + durationMinutes <= 1320; startMin += 30) {
+      for (let startMin = 420; startMin + durationMinutes <= 1380; startMin += 15) {
         let hasConflict = false;
         for (let m = startMin; m < startMin + durationMinutes; m++) {
           if (occupancy[m]) {
@@ -124,61 +125,63 @@ const ScheduleGenerator = () => {
       return null;
     };
 
-    // 4. Schedule Auto Tasks
-    autoTasks.forEach((task, taskIdx) => {
-      const isDaily = task.time_mode === "daily";
-      
-      if (isDaily) {
-        // Daily task: Schedule on EVERY day of the week
-        const dailyHours = Number(task.hours_required || task.daily_time || 2);
-        const reqMinutes = Math.max(30, Math.round(dailyHours * 60));
+    // 4. Schedule Daily Tasks (Repeat across EVERY day of the week)
+    const dailyTasks = autoTasks.filter((t) => t.time_mode === "daily" || t.daily_time);
+    const totalTasks = autoTasks.filter((t) => t.time_mode !== "daily" && !t.daily_time);
 
-        daysOfWeek.forEach((day) => {
-          const slot = tryScheduleSlot(day, reqMinutes);
-          if (slot) {
-            generated.push({
-              id: `${task.id}-daily-${day}-${Date.now()}`,
-              taskId: task.id,
-              taskName: task.title,
-              day,
-              startTime: minutesToTime(slot.start),
-              endTime: minutesToTime(slot.end),
-              duration: dailyHours
-            });
+    dailyTasks.forEach((task) => {
+      const dailyHours = Number(task.hours_required || task.daily_time || 2);
+      const reqMinutes = Math.max(30, Math.round(dailyHours * 60));
 
-            for (let m = slot.start; m < slot.end; m++) {
-              dayOccupancy[day][m] = true;
-            }
+      daysOfWeek.forEach((day) => {
+        const slot = findFreeSlot(day, reqMinutes);
+        if (slot) {
+          generated.push({
+            id: `${task.id}-daily-${day}`,
+            taskId: task.id,
+            taskName: task.title,
+            day,
+            startTime: minutesToTime(slot.start),
+            endTime: minutesToTime(slot.end),
+            duration: dailyHours
+          });
+
+          for (let m = slot.start; m < slot.end; m++) {
+            dayOccupancy[day][m] = true;
           }
-        });
-      } else {
-        // Total time task: Distribute total required hours across available days (max 2-3 hrs/day)
-        let totalHoursRemaining = Number(task.hours_required || task.total_time || 2);
-        const maxDailyChunkHours = Math.min(3, totalHoursRemaining); // Cap single session at 3 hrs
+        }
+      });
+    });
 
+    // 5. Schedule Total Time Tasks (Spread total required hours across free days in 2-3 hour daily chunks)
+    totalTasks.forEach((task) => {
+      let totalHoursRemaining = Number(task.hours_required || task.total_time || 2);
+
+      // Iterate across days until all required hours are allocated
+      for (let pass = 0; pass < 3 && totalHoursRemaining > 0; pass++) {
         daysOfWeek.forEach((day) => {
           if (totalHoursRemaining <= 0) return;
 
-          const currentChunkHours = Math.min(totalHoursRemaining, maxDailyChunkHours);
-          const reqMinutes = Math.max(30, Math.round(currentChunkHours * 60));
+          const sessionHours = Math.min(3, totalHoursRemaining); // Max 3 hours per session
+          const reqMinutes = Math.max(30, Math.round(sessionHours * 60));
 
-          const slot = tryScheduleSlot(day, reqMinutes);
+          const slot = findFreeSlot(day, reqMinutes);
           if (slot) {
             generated.push({
-              id: `${task.id}-total-${day}-${Date.now()}`,
+              id: `${task.id}-total-${day}-${totalHoursRemaining}`,
               taskId: task.id,
-              taskName: `${task.title} (${currentChunkHours}h session)`,
+              taskName: `${task.title} (${sessionHours}h)`,
               day,
               startTime: minutesToTime(slot.start),
               endTime: minutesToTime(slot.end),
-              duration: currentChunkHours
+              duration: sessionHours
             });
 
             for (let m = slot.start; m < slot.end; m++) {
               dayOccupancy[day][m] = true;
             }
 
-            totalHoursRemaining -= currentChunkHours;
+            totalHoursRemaining -= sessionHours;
           }
         });
       }
@@ -197,20 +200,7 @@ const ScheduleGenerator = () => {
 
     setUserId(user.id);
 
-    // Fetch existing saved schedule from Supabase
-    const { data: dbSchedule, error: schedError } = await supabase
-      .from("schedules")
-      .select("schedule_data")
-      .eq("user_id", user.id)
-      .maybeSingle();
-
-    if (!schedError && dbSchedule && Array.isArray(dbSchedule.schedule_data) && dbSchedule.schedule_data.length > 0) {
-      setSchedule(dbSchedule.schedule_data as ScheduleItem[]);
-      setLoading(false);
-      return;
-    }
-
-    // Generate schedule
+    // 1. Fetch live routines and tasks directly from Supabase
     const { data: dbRoutines } = await supabase
       .from("routines")
       .select("activities")
@@ -226,9 +216,10 @@ const ScheduleGenerator = () => {
     const userTasks = dbTasks || [];
 
     if (userTasks.length > 0) {
-      const generated = generateFullSchedule(userTasks, routineActivities);
+      const generated = generateCompleteSchedule(userTasks, routineActivities);
       setSchedule(generated);
 
+      // Upsert into schedules table so AutoReschedule page gets the exact same schedule
       await supabase.from("schedules").upsert({
         user_id: user.id,
         schedule_data: generated,
