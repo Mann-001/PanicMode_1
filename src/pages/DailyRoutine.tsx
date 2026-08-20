@@ -10,29 +10,53 @@ import { supabase } from "@/lib/supabaseClient";
 interface RoutineActivity {
   id: string;
   name: string;
-  startTime: string; // HH:MM format
-  endTime: string;   // HH:MM format
+  startTime: string; // HH:MM format (24hr)
+  endTime: string;   // HH:MM format (24hr)
 }
 
-// Convert "HH:MM" to total minutes for collision comparison
+// Convert "HH:MM" to total minutes from 00:00
 const timeToMinutes = (timeStr: string): number => {
+  if (!timeStr) return 0;
   const [hours, minutes] = timeStr.split(":").map(Number);
   return hours * 60 + minutes;
 };
 
-// Check if two time ranges overlap
+// Returns normalized intervals [start, end] in minutes.
+// If end <= start, it crosses midnight (e.g. 22:00 to 06:00), returning TWO intervals:
+// Interval 1: [22:00, 24:00] and Interval 2: [00:00, 06:00]
+const getMinutesIntervals = (startStr: string, endStr: string): [number, number][] => {
+  const start = timeToMinutes(startStr);
+  const end = timeToMinutes(endStr);
+
+  if (start < end) {
+    return [[start, end]];
+  } else {
+    // Overnight activity: splits into [start -> 1440] and [0 -> end]
+    return [
+      [start, 24 * 60],
+      [0, end]
+    ];
+  }
+};
+
+// Checks if two activities overlap on a 24-hour cycle
 const isOverlapping = (
   start1: string,
   end1: string,
   start2: string,
   end2: string
 ): boolean => {
-  const s1 = timeToMinutes(start1);
-  const e1 = timeToMinutes(end1);
-  const s2 = timeToMinutes(start2);
-  const e2 = timeToMinutes(end2);
+  const intervals1 = getMinutesIntervals(start1, end1);
+  const intervals2 = getMinutesIntervals(start2, end2);
 
-  return Math.max(s1, s2) < Math.min(e1, e2);
+  for (const [s1, e1] of intervals1) {
+    for (const [s2, e2] of intervals2) {
+      if (Math.max(s1, s2) < Math.min(e1, e2)) {
+        return true;
+      }
+    }
+  }
+  return false;
 };
 
 const DailyRoutine = () => {
@@ -42,8 +66,8 @@ const DailyRoutine = () => {
   const [saving, setSaving] = useState(false);
   const [newActivity, setNewActivity] = useState({
     name: "",
-    startTime: "09:00",
-    endTime: "10:00",
+    startTime: "22:00",
+    endTime: "06:00",
   });
   const [isEditing, setIsEditing] = useState<string | null>(null);
   const navigate = useNavigate();
@@ -104,12 +128,12 @@ const DailyRoutine = () => {
       return false;
     }
 
-    if (newActivity.startTime >= newActivity.endTime) {
-      toast({ title: "End time must be after start time", variant: "destructive" });
+    if (newActivity.startTime === newActivity.endTime) {
+      toast({ title: "Start and end times cannot be identical", variant: "destructive" });
       return false;
     }
 
-    // Check for overlap against all activities except the one currently being edited
+    // Check for overlap against all existing activities
     const hasOverlap = activities.some((item) => {
       if (isEditing && item.id === isEditing) return false;
       return isOverlapping(
@@ -123,7 +147,7 @@ const DailyRoutine = () => {
     if (hasOverlap) {
       toast({
         title: "Time Slot Conflict!",
-        description: "This activity overlaps with an existing activity in your routine.",
+        description: "This activity overlaps with another activity in your routine.",
         variant: "destructive",
       });
       return false;
@@ -185,7 +209,7 @@ const DailyRoutine = () => {
             Tell us about your daily routine
           </h1>
           <p className="text-gray-600">
-            Add fixed non-overlapping activities so we can optimize your study schedule
+            Add fixed non-overlapping activities (including overnight schedules) so we can optimize your study schedule
           </p>
         </div>
 
@@ -209,7 +233,7 @@ const DailyRoutine = () => {
                     Activity Name
                   </label>
                   <Input
-                    placeholder="e.g., Lunch, Gym, Class"
+                    placeholder="e.g., Sleep, Gym, Lunch"
                     value={newActivity.name}
                     onChange={(e) => setNewActivity({ ...newActivity, name: e.target.value })}
                     className="border-teal-200 focus:border-teal-400"
