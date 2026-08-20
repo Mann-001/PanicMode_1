@@ -1,11 +1,11 @@
-
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Plus, Clock, Edit } from "lucide-react";
+import { Plus, Clock, Edit, Loader2 } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
+import { supabase } from "@/lib/supabaseClient";
 
 interface RoutineActivity {
   id: string;
@@ -16,6 +16,9 @@ interface RoutineActivity {
 
 const DailyRoutine = () => {
   const [activities, setActivities] = useState<RoutineActivity[]>([]);
+  const [userId, setUserId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [newActivity, setNewActivity] = useState({
     name: "",
     startTime: "",
@@ -25,31 +28,65 @@ const DailyRoutine = () => {
   const navigate = useNavigate();
 
   useEffect(() => {
-    const savedRoutine = localStorage.getItem("panicmode_routine");
-    if (savedRoutine) {
-      setActivities(JSON.parse(savedRoutine));
-    }
+    const fetchRoutine = async () => {
+      setLoading(true);
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        setUserId(user.id);
+        
+        // Fetch routine JSONB from Supabase
+        const { data, error } = await supabase
+          .from("routines")
+          .select("activities")
+          .eq("user_id", user.id)
+          .maybeSingle();
+
+        if (error) {
+          console.error("Error fetching routine:", error);
+        } else if (data && data.activities) {
+          setActivities(data.activities as RoutineActivity[]);
+        }
+      }
+      setLoading(false);
+    };
+
+    fetchRoutine();
   }, []);
 
-  const saveRoutine = (updatedActivities: RoutineActivity[]) => {
-    localStorage.setItem("panicmode_routine", JSON.stringify(updatedActivities));
+  const saveRoutineToSupabase = async (updatedActivities: RoutineActivity[]) => {
+    if (!userId) return;
+
+    setSaving(true);
     setActivities(updatedActivities);
+
+    // Upsert into routines table using user_id conflict key
+    const { error } = await supabase
+      .from("routines")
+      .upsert({
+        user_id: userId,
+        activities: updatedActivities,
+        updated_at: new Date().toISOString()
+      }, { onConflict: "user_id" });
+
+    setSaving(false);
+
+    if (error) {
+      toast({
+        title: "Failed to sync routine",
+        description: error.message,
+        variant: "destructive"
+      });
+    }
   };
 
   const handleAddActivity = () => {
     if (!newActivity.name || !newActivity.startTime || !newActivity.endTime) {
-      toast({
-        title: "Please fill in all fields",
-        variant: "destructive",
-      });
+      toast({ title: "Please fill in all fields", variant: "destructive" });
       return;
     }
 
     if (newActivity.startTime >= newActivity.endTime) {
-      toast({
-        title: "End time must be after start time",
-        variant: "destructive",
-      });
+      toast({ title: "End time must be after start time", variant: "destructive" });
       return;
     }
 
@@ -58,14 +95,11 @@ const DailyRoutine = () => {
       ...newActivity
     };
 
-    const updatedActivities = [...activities, activity];
-    saveRoutine(updatedActivities);
+    const updated = [...activities, activity];
+    saveRoutineToSupabase(updated);
     setNewActivity({ name: "", startTime: "", endTime: "" });
-    
-    toast({
-      title: "Activity added!",
-      description: `${newActivity.name} has been added to your routine`,
-    });
+
+    toast({ title: "Activity added!" });
   };
 
   const handleEditActivity = (id: string) => {
@@ -78,48 +112,25 @@ const DailyRoutine = () => {
 
   const handleUpdateActivity = () => {
     if (!newActivity.name || !newActivity.startTime || !newActivity.endTime) {
-      toast({
-        title: "Please fill in all fields",
-        variant: "destructive",
-      });
+      toast({ title: "Please fill in all fields", variant: "destructive" });
       return;
     }
 
-    const updatedActivities = activities.map(activity =>
-      activity.id === isEditing
-        ? { ...activity, ...newActivity }
-        : activity
+    const updated = activities.map(a =>
+      a.id === isEditing ? { ...a, ...newActivity } : a
     );
 
-    saveRoutine(updatedActivities);
+    saveRoutineToSupabase(updated);
     setNewActivity({ name: "", startTime: "", endTime: "" });
     setIsEditing(null);
-    
-    toast({
-      title: "Activity updated!",
-    });
+
+    toast({ title: "Activity updated!" });
   };
 
   const handleDeleteActivity = (id: string) => {
-    const updatedActivities = activities.filter(activity => activity.id !== id);
-    saveRoutine(updatedActivities);
-    
-    toast({
-      title: "Activity removed",
-    });
-  };
-
-  const handleContinue = () => {
-    if (activities.length === 0) {
-      toast({
-        title: "Add at least one activity",
-        description: "Your routine helps us find free time for studying",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    navigate("/tasks");
+    const updated = activities.filter(a => a.id !== id);
+    saveRoutineToSupabase(updated);
+    toast({ title: "Activity removed" });
   };
 
   return (
@@ -134,132 +145,139 @@ const DailyRoutine = () => {
           </p>
         </div>
 
-        <div className="grid gap-6 md:grid-cols-2">
-          {/* Add Activity Form */}
-          <Card className="shadow-lg border-0 bg-white/90 backdrop-blur-sm">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-teal-600">
-                <Plus className="h-5 w-5" />
-                {isEditing ? "Edit Activity" : "Add Activity"}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div>
-                <label className="text-sm font-medium text-gray-700 block mb-2">
-                  Activity Name
-                </label>
-                <Input
-                  placeholder="e.g., Sleep, Breakfast, Gym"
-                  value={newActivity.name}
-                  onChange={(e) => setNewActivity({ ...newActivity, name: e.target.value })}
-                  className="border-teal-200 focus:border-teal-400"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
+        {loading ? (
+          <div className="flex justify-center py-12">
+            <Loader2 className="h-8 w-8 animate-spin text-teal-600" />
+          </div>
+        ) : (
+          <div className="grid gap-6 md:grid-cols-2">
+            {/* Add Activity Form */}
+            <Card className="shadow-lg border-0 bg-white/90 backdrop-blur-sm">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-teal-600">
+                  <Plus className="h-5 w-5" />
+                  {isEditing ? "Edit Activity" : "Add Activity"}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
                 <div>
                   <label className="text-sm font-medium text-gray-700 block mb-2">
-                    Start Time
+                    Activity Name
                   </label>
                   <Input
-                    type="time"
-                    value={newActivity.startTime}
-                    onChange={(e) => setNewActivity({ ...newActivity, startTime: e.target.value })}
+                    placeholder="e.g., Sleep, Breakfast, Gym"
+                    value={newActivity.name}
+                    onChange={(e) => setNewActivity({ ...newActivity, name: e.target.value })}
                     className="border-teal-200 focus:border-teal-400"
                   />
                 </div>
 
-                <div>
-                  <label className="text-sm font-medium text-gray-700 block mb-2">
-                    End Time
-                  </label>
-                  <Input
-                    type="time"
-                    value={newActivity.endTime}
-                    onChange={(e) => setNewActivity({ ...newActivity, endTime: e.target.value })}
-                    className="border-teal-200 focus:border-teal-400"
-                  />
-                </div>
-              </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-sm font-medium text-gray-700 block mb-2">
+                      Start Time
+                    </label>
+                    <Input
+                      type="time"
+                      value={newActivity.startTime}
+                      onChange={(e) => setNewActivity({ ...newActivity, startTime: e.target.value })}
+                      className="border-teal-200 focus:border-teal-400"
+                    />
+                  </div>
 
-              <div className="flex gap-2">
-                <Button 
-                  onClick={isEditing ? handleUpdateActivity : handleAddActivity}
-                  className="flex-1 bg-teal-500 hover:bg-teal-600"
-                >
-                  {isEditing ? "Update Activity" : "Add Activity"}
-                </Button>
-                {isEditing && (
+                  <div>
+                    <label className="text-sm font-medium text-gray-700 block mb-2">
+                      End Time
+                    </label>
+                    <Input
+                      type="time"
+                      value={newActivity.endTime}
+                      onChange={(e) => setNewActivity({ ...newActivity, endTime: e.target.value })}
+                      className="border-teal-200 focus:border-teal-400"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex gap-2">
                   <Button 
-                    variant="outline"
-                    onClick={() => {
-                      setIsEditing(null);
-                      setNewActivity({ name: "", startTime: "", endTime: "" });
-                    }}
+                    onClick={isEditing ? handleUpdateActivity : handleAddActivity}
+                    disabled={saving}
+                    className="flex-1 bg-teal-500 hover:bg-teal-600"
                   >
-                    Cancel
+                    {saving ? "Syncing..." : isEditing ? "Update Activity" : "Add Activity"}
                   </Button>
-                )}
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Activities List */}
-          <Card className="shadow-lg border-0 bg-white/90 backdrop-blur-sm">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-teal-600">
-                <Clock className="h-5 w-5" />
-                Your Routine ({activities.length} activities)
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              {activities.length === 0 ? (
-                <p className="text-gray-500 text-center py-8">
-                  No activities added yet. Start by adding your daily routine!
-                </p>
-              ) : (
-                <div className="space-y-3 max-h-80 overflow-y-auto">
-                  {activities.map((activity) => (
-                    <div 
-                      key={activity.id}
-                      className="flex items-center justify-between p-3 bg-teal-50 rounded-lg border border-teal-100"
+                  {isEditing && (
+                    <Button 
+                      variant="outline"
+                      onClick={() => {
+                        setIsEditing(null);
+                        setNewActivity({ name: "", startTime: "", endTime: "" });
+                      }}
                     >
-                      <div className="flex-1">
-                        <h4 className="font-medium text-gray-800">{activity.name}</h4>
-                        <p className="text-sm text-gray-600">
-                          {activity.startTime} - {activity.endTime}
-                        </p>
-                      </div>
-                      <div className="flex gap-2">
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => handleEditActivity(activity.id)}
-                          className="text-teal-600 hover:text-teal-700 hover:bg-teal-100"
-                        >
-                          <Edit className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => handleDeleteActivity(activity.id)}
-                          className="text-red-500 hover:text-red-700 hover:bg-red-50"
-                        >
-                          ×
-                        </Button>
-                      </div>
-                    </div>
-                  ))}
+                      Cancel
+                    </Button>
+                  )}
                 </div>
-              )}
-            </CardContent>
-          </Card>
-        </div>
+              </CardContent>
+            </Card>
+
+            {/* Activities List */}
+            <Card className="shadow-lg border-0 bg-white/90 backdrop-blur-sm">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-teal-600">
+                  <Clock className="h-5 w-5" />
+                  Your Routine ({activities.length} activities)
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {activities.length === 0 ? (
+                  <p className="text-gray-500 text-center py-8">
+                    No activities added yet. Start by adding your daily routine!
+                  </p>
+                ) : (
+                  <div className="space-y-3 max-h-80 overflow-y-auto">
+                    {activities.map((activity) => (
+                      <div 
+                        key={activity.id}
+                        className="flex items-center justify-between p-3 bg-teal-50 rounded-lg border border-teal-100"
+                      >
+                        <div className="flex-1">
+                          <h4 className="font-medium text-gray-800">{activity.name}</h4>
+                          <p className="text-sm text-gray-600">
+                            {activity.startTime} - {activity.endTime}
+                          </p>
+                        </div>
+                        <div className="flex gap-2">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => handleEditActivity(activity.id)}
+                            className="text-teal-600 hover:bg-teal-100"
+                          >
+                            <Edit className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => handleDeleteActivity(activity.id)}
+                            className="text-red-500 hover:bg-red-50"
+                          >
+                            ×
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        )}
 
         <div className="text-center mt-8">
           <Button 
-            onClick={handleContinue}
-            className="bg-teal-500 hover:bg-teal-600 text-white px-8 py-3 text-lg rounded-xl shadow-lg hover:shadow-xl transition-all duration-200"
+            onClick={() => navigate("/tasks")}
+            className="bg-teal-500 hover:bg-teal-600 text-white px-8 py-3 text-lg rounded-xl shadow-lg hover:shadow-xl transition-all"
           >
             Continue to Tasks
           </Button>

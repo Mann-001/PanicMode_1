@@ -2,8 +2,8 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Calendar, Clock, ArrowRight, RefreshCw } from "lucide-react";
-import { toast } from "@/hooks/use-toast";
+import { Calendar, Clock, ArrowRight, RefreshCw, Home, PlusCircle, Loader2 } from "lucide-react";
+import { supabase } from "@/lib/supabaseClient";
 
 interface ScheduleItem {
   id: string;
@@ -19,60 +19,81 @@ const daysOfWeek = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Sat
 
 const ScheduleGenerator = () => {
   const [schedule, setSchedule] = useState<ScheduleItem[]>([]);
+  const [userId, setUserId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
 
+  const initSchedule = async () => {
+    setLoading(true);
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      setLoading(false);
+      return;
+    }
+
+    setUserId(user.id);
+
+    // 1. Check Supabase schedules table first
+    const { data: dbSchedule, error: schedError } = await supabase
+      .from("schedules")
+      .select("schedule_data")
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    if (!schedError && dbSchedule && Array.isArray(dbSchedule.schedule_data) && dbSchedule.schedule_data.length > 0) {
+      setSchedule(dbSchedule.schedule_data as ScheduleItem[]);
+      setLoading(false);
+      return;
+    }
+
+    // 2. Fallback: Generate schedule from Supabase tasks table if schedule doesn't exist
+    const { data: dbTasks, error: taskError } = await supabase
+      .from("tasks")
+      .select("*")
+      .eq("user_id", user.id);
+
+    if (!taskError && dbTasks && dbTasks.length > 0) {
+      const generated: ScheduleItem[] = [];
+
+      dbTasks.forEach((task: any, index: number) => {
+        const day = daysOfWeek[index % daysOfWeek.length];
+        const duration = Number(task.daily_time || task.total_time || 2);
+        const startHour = 9 + (index % 3) * 3;
+
+        generated.push({
+          id: `${task.id}-init-${Date.now()}`,
+          taskId: task.id,
+          taskName: task.title || "Study Session",
+          day,
+          startTime: `${startHour.toString().padStart(2, '0')}:00`,
+          endTime: `${(startHour + duration).toString().padStart(2, '0')}:00`,
+          duration
+        });
+      });
+
+      setSchedule(generated);
+
+      // Save generated schedule to Supabase schedules table
+      await supabase.from("schedules").upsert({
+        user_id: user.id,
+        schedule_data: generated,
+        updated_at: new Date().toISOString()
+      });
+    }
+
+    setLoading(false);
+  };
+
   useEffect(() => {
-    // 1. PRIORITIZE SAVED/RESCHEDULED SCHEDULE
-    const savedSchedule = localStorage.getItem("panicmode_schedule");
-    if (savedSchedule) {
-      try {
-        const parsed = JSON.parse(savedSchedule);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          setSchedule(parsed);
-          return; // Stop here so we don't overwrite rescheduled tasks!
-        }
-      } catch (e) {
-        console.error("Failed to parse saved schedule", e);
-      }
-    }
-
-    // 2. FALLBACK: Generate schedule from tasks if no saved schedule exists
-    const savedTasks = localStorage.getItem("panicmode_tasks");
-    if (savedTasks) {
-      try {
-        const tasks = JSON.parse(savedTasks);
-        if (Array.isArray(tasks) && tasks.length > 0) {
-          const generated: ScheduleItem[] = [];
-          
-          tasks.forEach((task: any, index: number) => {
-            const day = daysOfWeek[index % daysOfWeek.length];
-            const duration = Number(task.dailyTime || task.totalTime || 2);
-            const startHour = 9 + (index % 3) * 3;
-            
-            generated.push({
-              id: `${task.id || index}-init-${Date.now()}`,
-              taskId: task.id || `task-${index}`,
-              taskName: task.name || task.title || "Study Session",
-              day,
-              startTime: `${startHour.toString().padStart(2, '0')}:00`,
-              endTime: `${(startHour + duration).toString().padStart(2, '0')}:00`,
-              duration
-            });
-          });
-
-          setSchedule(generated);
-          localStorage.setItem("panicmode_schedule", JSON.stringify(generated));
-        }
-      } catch (e) {
-        console.error("Failed to parse tasks", e);
-      }
-    }
+    initSchedule();
   }, []);
 
-  const handleForceRegenerate = () => {
-    // Clear saved schedule to allow fresh generation from tasks
-    localStorage.removeItem("panicmode_schedule");
-    window.location.reload();
+  const handleForceRegenerate = async () => {
+    if (userId) {
+      setLoading(true);
+      await supabase.from("schedules").delete().eq("user_id", userId);
+      await initSchedule();
+    }
   };
 
   const groupedSchedule = schedule.reduce((acc, session) => {
@@ -89,9 +110,27 @@ const ScheduleGenerator = () => {
         <div className="text-center mb-8">
           <h1 className="text-3xl font-bold text-teal-600 mb-2">Your Live Schedule</h1>
           <p className="text-gray-600 mb-4">
-            This timeline reflects all updates made from the auto-rescheduler.
+            This timeline reflects all updates synced directly with your Supabase database.
           </p>
-          <div className="flex justify-center gap-4">
+
+          <div className="flex flex-wrap justify-center gap-3">
+            <Button
+              onClick={() => navigate("/routine")}
+              variant="outline"
+              className="border-teal-300 text-teal-700 hover:bg-teal-50 gap-2"
+            >
+              <Home className="h-4 w-4" />
+              Return to Home
+            </Button>
+
+            <Button
+              onClick={() => navigate("/tasks")}
+              className="bg-teal-600 hover:bg-teal-700 text-white gap-2"
+            >
+              <PlusCircle className="h-4 w-4" />
+              Add New Tasks
+            </Button>
+
             <Button
               onClick={handleForceRegenerate}
               variant="outline"
@@ -100,9 +139,10 @@ const ScheduleGenerator = () => {
               <RefreshCw className="h-4 w-4" />
               Reset & Force Regenerate
             </Button>
+
             <Button
               onClick={() => navigate("/reschedule")}
-              className="bg-teal-500 hover:bg-teal-600 gap-2"
+              className="bg-teal-500 hover:bg-teal-600 text-white gap-2"
             >
               Go to Rescheduler
               <ArrowRight className="h-4 w-4" />
@@ -110,37 +150,43 @@ const ScheduleGenerator = () => {
           </div>
         </div>
 
-        <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-          {daysOfWeek.map(day => {
-            const daySessions = groupedSchedule[day] || [];
+        {loading ? (
+          <div className="flex justify-center py-12">
+            <Loader2 className="h-8 w-8 animate-spin text-teal-600" />
+          </div>
+        ) : (
+          <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+            {daysOfWeek.map(day => {
+              const daySessions = groupedSchedule[day] || [];
 
-            return (
-              <Card key={day} className="shadow-lg border-0 bg-white/90 backdrop-blur-sm">
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-lg text-teal-600 flex items-center gap-2">
-                    <Calendar className="h-5 w-5" />
-                    {day}
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  {daySessions.length === 0 ? (
-                    <p className="text-gray-400 text-sm py-4">No sessions scheduled</p>
-                  ) : (
-                    daySessions.map(session => (
-                      <div key={session.id} className="p-3 bg-teal-50 rounded-lg border border-teal-200">
-                        <div className="font-medium text-gray-800">{session.taskName}</div>
-                        <div className="text-sm text-gray-600 flex items-center gap-1 mt-1">
-                          <Clock className="h-3 w-3" />
-                          {session.startTime} - {session.endTime}
+              return (
+                <Card key={day} className="shadow-lg border-0 bg-white/90 backdrop-blur-sm">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-lg text-teal-600 flex items-center gap-2">
+                      <Calendar className="h-5 w-5" />
+                      {day}
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    {daySessions.length === 0 ? (
+                      <p className="text-gray-400 text-sm py-4">No sessions scheduled</p>
+                    ) : (
+                      daySessions.map(session => (
+                        <div key={session.id} className="p-3 bg-teal-50 rounded-lg border border-teal-200">
+                          <div className="font-medium text-gray-800">{session.taskName}</div>
+                          <div className="text-sm text-gray-600 flex items-center gap-1 mt-1">
+                            <Clock className="h-3 w-3" />
+                            {session.startTime} - {session.endTime}
+                          </div>
                         </div>
-                      </div>
-                    ))
-                  )}
-                </CardContent>
-              </Card>
-            );
-          })}
-        </div>
+                      ))
+                    )}
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );

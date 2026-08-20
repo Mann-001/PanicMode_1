@@ -5,18 +5,21 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Plus, Calendar as CalendarIcon, Edit } from "lucide-react";
+import { Plus, Calendar as CalendarIcon, Edit, Trash2 } from "lucide-react";
 import { format, isValid } from "date-fns";
 import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
+import { supabase } from "@/lib/supabaseClient";
 
 interface Task {
   id: string;
-  name: string;
-  deadline: Date;
-  weightage: number;
-  totalTime?: number;
-  dailyTime?: number;
+  user_id: string;
+  title: string;
+  task_type: string;
+  deadline?: string | null;
+  priority?: number | null;
+  total_time?: number | null;
+  daily_time?: number | null;
 }
 
 const formatDateSafely = (date: Date | string | undefined): string => {
@@ -27,10 +30,11 @@ const formatDateSafely = (date: Date | string | undefined): string => {
 
 const TaskInput = () => {
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [loading, setLoading] = useState(false);
   const [newTask, setNewTask] = useState({
-    name: "",
+    title: "",
     deadline: undefined as Date | undefined,
-    weightage: 5,
+    priority: 5,
     totalTime: "",
     dailyTime: "",
     timeType: "total" as "total" | "daily"
@@ -38,40 +42,37 @@ const TaskInput = () => {
   const [isEditing, setIsEditing] = useState<string | null>(null);
   const navigate = useNavigate();
 
-  useEffect(() => {
-    try {
-      const savedTasks = localStorage.getItem("panicmode_tasks");
-      if (savedTasks) {
-        const parsedTasks = JSON.parse(savedTasks);
-        if (Array.isArray(parsedTasks)) {
-          const tasksWithDates = parsedTasks
-            .map((task: any) => {
-              const dateObj = new Date(task.deadline);
-              return {
-                ...task,
-                deadline: isValid(dateObj) ? dateObj : new Date()
-              };
-            })
-            .filter((task: Task) => task.name && isValid(new Date(task.deadline)));
-          
-          setTasks(tasksWithDates);
-        }
-      }
-    } catch (e) {
-      console.error("Failed to parse saved tasks", e);
+  // Load tasks from Supabase DB
+  const fetchTasks = async () => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+
+    const { data, error } = await supabase
+      .from("tasks")
+      .select("*")
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      toast({
+        title: "Failed to load tasks",
+        description: error.message,
+        variant: "destructive"
+      });
+    } else if (data) {
+      setTasks(data);
     }
+  };
+
+  useEffect(() => {
+    fetchTasks();
   }, []);
 
-  const saveTasks = (updatedTasks: Task[]) => {
-    localStorage.setItem("panicmode_tasks", JSON.stringify(updatedTasks));
-    setTasks(updatedTasks);
-  };
-
-  const handleAddTask = () => {
-    if (!newTask.name || !newTask.deadline || !isValid(new Date(newTask.deadline))) {
+  const handleSaveTask = async () => {
+    if (!newTask.title || !newTask.deadline) {
       toast({
         title: "Please fill in required fields",
-        description: "Task name and a valid deadline are required",
+        description: "Task title and deadline are required",
         variant: "destructive",
       });
       return;
@@ -80,124 +81,83 @@ const TaskInput = () => {
     const timeValue = newTask.timeType === "total" ? newTask.totalTime : newTask.dailyTime;
     if (!timeValue || parseFloat(timeValue) <= 0) {
       toast({
-        title: "Please enter a valid time",
-        description: "Either total time or daily time must be specified",
+        title: "Please enter valid time hours",
         variant: "destructive",
       });
       return;
     }
 
-    const task: Task = {
-      id: Date.now().toString(),
-      name: newTask.name,
-      deadline: newTask.deadline,
-      weightage: newTask.weightage,
-      ...(newTask.timeType === "total" 
-        ? { totalTime: parseFloat(newTask.totalTime) }
-        : { dailyTime: parseFloat(newTask.dailyTime) }
-      )
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+
+    setLoading(true);
+
+    const payload = {
+      user_id: user.id,
+      title: newTask.title,
+      task_type: "auto_scheduled",
+      deadline: newTask.deadline.toISOString(),
+      priority: newTask.priority,
+      total_time: newTask.timeType === "total" ? parseFloat(newTask.totalTime) : null,
+      daily_time: newTask.timeType === "daily" ? parseFloat(newTask.dailyTime) : null,
     };
 
-    const updatedTasks = [...tasks, task];
-    saveTasks(updatedTasks);
+    if (isEditing) {
+      const { error } = await supabase
+        .from("tasks")
+        .update(payload)
+        .eq("id", isEditing);
+
+      if (error) {
+        toast({ title: "Failed to update task", description: error.message, variant: "destructive" });
+      } else {
+        toast({ title: "Task updated!" });
+        setIsEditing(null);
+      }
+    } else {
+      const { error } = await supabase
+        .from("tasks")
+        .insert([payload]);
+
+      if (error) {
+        toast({ title: "Failed to save task", description: error.message, variant: "destructive" });
+      } else {
+        toast({ title: "Task saved to Supabase!" });
+      }
+    }
+
+    setLoading(false);
     setNewTask({
-      name: "",
+      title: "",
       deadline: undefined,
-      weightage: 5,
+      priority: 5,
       totalTime: "",
       dailyTime: "",
       timeType: "total"
     });
-    
-    toast({
-      title: "Task added!",
-      description: `${newTask.name} has been added to your task list`,
-    });
+    fetchTasks();
   };
 
-  const handleEditTask = (id: string) => {
-    const task = tasks.find(t => t.id === id);
-    if (task) {
-      const dateObj = new Date(task.deadline);
-      setNewTask({
-        name: task.name,
-        deadline: isValid(dateObj) ? dateObj : undefined,
-        weightage: task.weightage,
-        totalTime: task.totalTime?.toString() || "",
-        dailyTime: task.dailyTime?.toString() || "",
-        timeType: task.totalTime ? "total" : "daily"
-      });
-      setIsEditing(id);
-    }
-  };
-
-  const handleUpdateTask = () => {
-    if (!newTask.name || !newTask.deadline || !isValid(new Date(newTask.deadline))) {
-      toast({
-        title: "Please fill in required fields",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    const timeValue = newTask.timeType === "total" ? newTask.totalTime : newTask.dailyTime;
-    if (!timeValue || parseFloat(timeValue) <= 0) {
-      toast({
-        title: "Please enter a valid time",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    const updatedTasks = tasks.map(task =>
-      task.id === isEditing
-        ? {
-            ...task,
-            name: newTask.name,
-            deadline: newTask.deadline!,
-            weightage: newTask.weightage,
-            totalTime: newTask.timeType === "total" ? parseFloat(newTask.totalTime) : undefined,
-            dailyTime: newTask.timeType === "daily" ? parseFloat(newTask.dailyTime) : undefined
-          }
-        : task
-    );
-
-    saveTasks(updatedTasks);
+  const handleEditTask = (task: Task) => {
     setNewTask({
-      name: "",
-      deadline: undefined,
-      weightage: 5,
-      totalTime: "",
-      dailyTime: "",
-      timeType: "total"
+      title: task.title,
+      deadline: task.deadline ? new Date(task.deadline) : undefined,
+      priority: task.priority || 5,
+      totalTime: task.total_time?.toString() || "",
+      dailyTime: task.daily_time?.toString() || "",
+      timeType: task.total_time ? "total" : "daily"
     });
-    setIsEditing(null);
-    
-    toast({
-      title: "Task updated!",
-    });
+    setIsEditing(task.id);
   };
 
-  const handleDeleteTask = (id: string) => {
-    const updatedTasks = tasks.filter(task => task.id !== id);
-    saveTasks(updatedTasks);
-    
-    toast({
-      title: "Task removed",
-    });
-  };
-
-  const handleContinue = () => {
-    if (tasks.length === 0) {
-      toast({
-        title: "Add at least one task",
-        description: "We need tasks to generate your study schedule",
-        variant: "destructive",
-      });
-      return;
+  const handleDeleteTask = async (id: string) => {
+    const { error } = await supabase.from("tasks").delete().eq("id", id);
+    if (error) {
+      toast({ title: "Failed to delete task", description: error.message, variant: "destructive" });
+    } else {
+      toast({ title: "Task removed" });
+      fetchTasks();
     }
-
-    navigate("/schedule");
   };
 
   return (
@@ -205,15 +165,15 @@ const TaskInput = () => {
       <div className="max-w-6xl mx-auto">
         <div className="text-center mb-8">
           <h1 className="text-3xl font-bold text-teal-600 mb-2">
-            What do you need to get done?
+            Manage Your Tasks
           </h1>
           <p className="text-gray-600">
-            Add your tasks with deadlines and time requirements
+            Add tasks directly to your Supabase cloud planner
           </p>
         </div>
 
         <div className="grid gap-6 lg:grid-cols-2">
-          {/* Add Task Form */}
+          {/* Add / Edit Form */}
           <Card className="shadow-lg border-0 bg-white/90 backdrop-blur-sm">
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-teal-600">
@@ -224,12 +184,12 @@ const TaskInput = () => {
             <CardContent className="space-y-4">
               <div>
                 <label className="text-sm font-medium text-gray-700 block mb-2">
-                  Task Name *
+                  Task Title *
                 </label>
                 <Input
-                  placeholder="e.g., Math Assignment, History Essay"
-                  value={newTask.name}
-                  onChange={(e) => setNewTask({ ...newTask, name: e.target.value })}
+                  placeholder="e.g., Mathematics Exam Prep"
+                  value={newTask.title}
+                  onChange={(e) => setNewTask({ ...newTask, title: e.target.value })}
                   className="border-teal-200 focus:border-teal-400"
                 />
               </div>
@@ -256,9 +216,7 @@ const TaskInput = () => {
                       mode="single"
                       selected={newTask.deadline}
                       onSelect={(date) => setNewTask({ ...newTask, deadline: date })}
-                      disabled={(date) => date < new Date()}
                       initialFocus
-                      className="pointer-events-auto"
                     />
                   </PopoverContent>
                 </Popover>
@@ -272,8 +230,8 @@ const TaskInput = () => {
                   type="number"
                   min="1"
                   max="10"
-                  value={newTask.weightage}
-                  onChange={(e) => setNewTask({ ...newTask, weightage: parseInt(e.target.value) || 5 })}
+                  value={newTask.priority}
+                  onChange={(e) => setNewTask({ ...newTask, priority: parseInt(e.target.value) || 5 })}
                   className="border-teal-200 focus:border-teal-400"
                 />
               </div>
@@ -282,29 +240,27 @@ const TaskInput = () => {
                 <label className="text-sm font-medium text-gray-700 block">
                   Time Requirement *
                 </label>
-                
+
                 <div className="flex gap-4">
-                  <label className="flex items-center">
+                  <label className="flex items-center gap-2 text-sm text-gray-600">
                     <input
                       type="radio"
                       name="timeType"
-                      value="total"
                       checked={newTask.timeType === "total"}
-                      onChange={(e) => setNewTask({ ...newTask, timeType: e.target.value as "total" | "daily" })}
-                      className="mr-2 text-teal-500"
+                      onChange={() => setNewTask({ ...newTask, timeType: "total" })}
+                      className="accent-teal-500"
                     />
-                    Total Time (hours)
+                    Total Hours
                   </label>
-                  <label className="flex items-center">
+                  <label className="flex items-center gap-2 text-sm text-gray-600">
                     <input
                       type="radio"
                       name="timeType"
-                      value="daily"
                       checked={newTask.timeType === "daily"}
-                      onChange={(e) => setNewTask({ ...newTask, timeType: e.target.value as "total" | "daily" })}
-                      className="mr-2 text-teal-500"
+                      onChange={() => setNewTask({ ...newTask, timeType: "daily" })}
+                      className="accent-teal-500"
                     />
-                    Daily Time (hours)
+                    Daily Hours
                   </label>
                 </div>
 
@@ -312,7 +268,7 @@ const TaskInput = () => {
                   type="number"
                   step="0.5"
                   min="0.5"
-                  placeholder={newTask.timeType === "total" ? "Total hours needed" : "Hours per day"}
+                  placeholder={newTask.timeType === "total" ? "Total study hours" : "Daily hours needed"}
                   value={newTask.timeType === "total" ? newTask.totalTime : newTask.dailyTime}
                   onChange={(e) => setNewTask({ 
                     ...newTask, 
@@ -324,10 +280,11 @@ const TaskInput = () => {
 
               <div className="flex gap-2">
                 <Button 
-                  onClick={isEditing ? handleUpdateTask : handleAddTask}
+                  onClick={handleSaveTask}
+                  disabled={loading}
                   className="flex-1 bg-teal-500 hover:bg-teal-600"
                 >
-                  {isEditing ? "Update Task" : "Add Task"}
+                  {loading ? "Saving..." : isEditing ? "Update Task" : "Add Task"}
                 </Button>
                 {isEditing && (
                   <Button 
@@ -335,9 +292,9 @@ const TaskInput = () => {
                     onClick={() => {
                       setIsEditing(null);
                       setNewTask({
-                        name: "",
+                        title: "",
                         deadline: undefined,
-                        weightage: 5,
+                        priority: 5,
                         totalTime: "",
                         dailyTime: "",
                         timeType: "total"
@@ -351,34 +308,31 @@ const TaskInput = () => {
             </CardContent>
           </Card>
 
-          {/* Tasks List */}
+          {/* Database Tasks List */}
           <Card className="shadow-lg border-0 bg-white/90 backdrop-blur-sm">
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-teal-600">
                 <CalendarIcon className="h-5 w-5" />
-                Your Tasks ({tasks.length})
+                Cloud Tasks ({tasks.length})
               </CardTitle>
             </CardHeader>
             <CardContent>
               {tasks.length === 0 ? (
                 <p className="text-gray-500 text-center py-8">
-                  No tasks added yet. Start by adding your first task!
+                  No tasks saved in your Supabase database yet.
                 </p>
               ) : (
                 <div className="space-y-3 max-h-80 overflow-y-auto">
                   {tasks.map((task) => (
-                    <div 
-                      key={task.id}
-                      className="p-4 bg-teal-50 rounded-lg border border-teal-100"
-                    >
-                      <div className="flex items-start justify-between mb-2">
-                        <h4 className="font-medium text-gray-800">{task.name}</h4>
+                    <div key={task.id} className="p-4 bg-teal-50 rounded-lg border border-teal-100">
+                      <div className="flex items-start justify-between mb-1">
+                        <h4 className="font-medium text-gray-800">{task.title}</h4>
                         <div className="flex gap-1">
                           <Button
                             size="sm"
                             variant="ghost"
-                            onClick={() => handleEditTask(task.id)}
-                            className="text-teal-600 hover:text-teal-700 hover:bg-teal-100 p-1"
+                            onClick={() => handleEditTask(task)}
+                            className="text-teal-600 hover:bg-teal-100 p-1"
                           >
                             <Edit className="h-4 w-4" />
                           </Button>
@@ -386,21 +340,16 @@ const TaskInput = () => {
                             size="sm"
                             variant="ghost"
                             onClick={() => handleDeleteTask(task.id)}
-                            className="text-red-500 hover:text-red-700 hover:bg-red-50 p-1"
+                            className="text-red-500 hover:bg-red-50 p-1"
                           >
-                            ×
+                            <Trash2 className="h-4 w-4" />
                           </Button>
                         </div>
                       </div>
-                      <div className="text-sm text-gray-600 space-y-1">
-                        <p>Due: {formatDateSafely(task.deadline)}</p>
-                        <p>Priority: {task.weightage}/10</p>
-                        <p>
-                          {task.totalTime 
-                            ? `Total: ${task.totalTime} hours` 
-                            : `Daily: ${task.dailyTime} hours`
-                          }
-                        </p>
+                      <div className="text-sm text-gray-600 space-y-0.5">
+                        <p>Type: <span className="font-semibold">{task.task_type}</span></p>
+                        <p>Due: {formatDateSafely(task.deadline || undefined)}</p>
+                        <p>Priority: {task.priority ?? "N/A"}</p>
                       </div>
                     </div>
                   ))}
@@ -412,8 +361,8 @@ const TaskInput = () => {
 
         <div className="text-center mt-8">
           <Button 
-            onClick={handleContinue}
-            className="bg-teal-500 hover:bg-teal-600 text-white px-8 py-3 text-lg rounded-xl shadow-lg hover:shadow-xl transition-all duration-200"
+            onClick={() => navigate("/schedule")}
+            className="bg-teal-500 hover:bg-teal-600 text-white px-8 py-3 text-lg rounded-xl shadow-lg transition-all"
           >
             Generate Schedule
           </Button>
