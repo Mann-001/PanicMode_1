@@ -93,3 +93,16 @@
     @apply bg-gradient-to-br from-teal-50 to-white text-foreground font-poppins;
   }
 }
+
+/* --- HIDE ALL LOVABLE WATERMARKS & BADGES --- */
+[data-lovable-badge],
+div[class*="lovable"],
+a[href*="lovable.dev"],
+button[class*="lovable"],
+#lovable-badge,
+#lovable-editor-badge {
+  display: none !important;
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
