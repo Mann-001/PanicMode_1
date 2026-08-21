@@ -1,73 +1,46 @@
-# Welcome to your Lovable project
+# PanicMode - Smart Study Planner
 
-## Project info
+PanicMode is an automated study planner designed for students balancing academic deadlines against fixed personal routines (classes, work, personal commitments). It bridges flexible task management with fixed calendar scheduling.
 
-**URL**: https://lovable.dev/projects/eb2348b4-36ea-4144-b75f-826c890eb126
+---
 
-## How can I edit this code?
+## Core Features & Architecture
 
-There are several ways of editing your application.
+| Feature | Description | Technical Implementation |
+| :--- | :--- | :--- |
+| **Routine Management** | Captures non-negotiable daily activities (sleep, classes, work) including overnight spans | Saved to `routines` table (`activities` JSONB column) |
+| **Task Management** | Accepts both flexible auto-scheduled tasks and fixed pinned reminders | Saved to `tasks` table with deadline & priority tracking |
+| **Conflict-Free Scheduling** | Auto-places flexible tasks exclusively inside free windows outside routine blocks | Custom 24-hour minute-mask algorithm in `ScheduleGenerator` |
+| **Smart Rescheduling** | Shift missed or unavailable tasks dynamically to subsequent free days | State-synced to `schedules` table (`schedule_data` JSONB) |
+| **Authentication & Sync** | User registration, session persistence, and secure data access | Supabase Auth with Row Level Security (RLS) |
 
-**Use Lovable**
+---
 
-Simply visit the [Lovable Project](https://lovable.dev/projects/eb2348b4-36ea-4144-b75f-826c890eb126) and start prompting.
+## Tech Stack
 
-Changes made via Lovable will be committed automatically to this repo.
+| Domain | Technologies Used |
+| :--- | :--- |
+| **Frontend Framework** | React 18, TypeScript, Vite |
+| **UI & Styling** | Tailwind CSS, shadcn/ui, Lucide Icons |
+| **Backend & Auth** | Supabase (PostgreSQL, Supabase Auth, Row Level Security) |
+| **State & Router** | React Router DOM v6 |
 
-**Use your preferred IDE**
+---
 
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
+## Database Schema Overview
 
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
+| Table | Key Columns | Purpose |
+| :--- | :--- | :--- |
+| `routines` | `user_id`, `activities` (jsonb), `updated_at` | Stores non-overlapping fixed daily routine blocks |
+| `tasks` | `user_id`, `title`, `task_type`, `deadline`, `priority`, `time_mode`, `hours_required`, `pinned_datetime` | Stores both auto-scheduled and pinned user tasks |
+| `schedules` | `user_id`, `schedule_data` (jsonb), `updated_at` | Persists generated and rescheduled weekly timelines |
 
-Follow these steps:
+---
 
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
+## Environment Configuration
 
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
+Configure your Supabase environment variables in your project host or `.env` file:
 
-# Step 3: Install the necessary dependencies.
-npm i
-
-# Step 4: Start the development server with auto-reloading and an instant preview.
-npm run dev
-```
-
-**Edit a file directly in GitHub**
-
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
-
-**Use GitHub Codespaces**
-
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
-
-## What technologies are used for this project?
-
-This project is built with:
-
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
-
-## How can I deploy this project?
-
-Simply open [Lovable](https://lovable.dev/projects/eb2348b4-36ea-4144-b75f-826c890eb126) and click on Share -> Publish.
-
-## Can I connect a custom domain to my Lovable project?
-
-Yes, you can!
-
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
-
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/tips-tricks/custom-domain#step-by-step-guide)
+```env
+VITE_SUPABASE_URL=your_supabase_project_url
+VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
