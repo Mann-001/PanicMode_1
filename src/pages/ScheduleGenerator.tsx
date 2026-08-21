@@ -158,7 +158,7 @@ const ScheduleGenerator = () => {
       let totalHoursRemaining = Number(task.hours_required || task.total_time || 2);
 
       // Iterate across days until all required hours are allocated
-      for (let pass = 0; pass < 3 && totalHoursRemaining > 0; pass++) {
+      for (let pass = 0; pass < 5 && totalHoursRemaining > 0; pass++) {
         daysOfWeek.forEach((day) => {
           if (totalHoursRemaining <= 0) return;
 
@@ -190,17 +190,7 @@ const ScheduleGenerator = () => {
     return generated;
   };
 
-  const initSchedule = async () => {
-    setLoading(true);
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
-      setLoading(false);
-      return;
-    }
-
-    setUserId(user.id);
-
-    // 1. Fetch live routines and tasks directly from Supabase
+  const generateAndSaveFreshSchedule = async (user: any) => {
     const { data: dbRoutines } = await supabase
       .from("routines")
       .select("activities")
@@ -219,7 +209,6 @@ const ScheduleGenerator = () => {
       const generated = generateCompleteSchedule(userTasks, routineActivities);
       setSchedule(generated);
 
-      // Upsert into schedules table so AutoReschedule page gets the exact same schedule
       await supabase.from("schedules").upsert({
         user_id: user.id,
         schedule_data: generated,
@@ -227,6 +216,39 @@ const ScheduleGenerator = () => {
       }, { onConflict: "user_id" });
     } else {
       setSchedule([]);
+    }
+  };
+
+  const initSchedule = async () => {
+    setLoading(true);
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      setLoading(false);
+      return;
+    }
+
+    setUserId(user.id);
+
+    // Fetch tasks count to make sure schedule is up to date
+    const { data: dbTasks } = await supabase
+      .from("tasks")
+      .select("id")
+      .eq("user_id", user.id);
+
+    const taskCount = dbTasks ? dbTasks.length : 0;
+
+    // Fetch saved schedule
+    const { data: dbSchedule, error: schedError } = await supabase
+      .from("schedules")
+      .select("schedule_data")
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    if (!schedError && dbSchedule && Array.isArray(dbSchedule.schedule_data) && dbSchedule.schedule_data.length >= taskCount && taskCount > 0) {
+      setSchedule(dbSchedule.schedule_data as ScheduleItem[]);
+    } else {
+      // Regenerate if schedule is missing or stale
+      await generateAndSaveFreshSchedule(user);
     }
 
     setLoading(false);
@@ -239,8 +261,12 @@ const ScheduleGenerator = () => {
   const handleForceRegenerate = async () => {
     if (userId) {
       setLoading(true);
-      await supabase.from("schedules").delete().eq("user_id", userId);
-      await initSchedule();
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        await supabase.from("schedules").delete().eq("user_id", user.id);
+        await generateAndSaveFreshSchedule(user);
+      }
+      setLoading(false);
     }
   };
 
